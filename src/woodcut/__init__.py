@@ -1,8 +1,3 @@
-# /// script
-# dependencies = [
-#   "matplotlib",
-# ]
-# ///
 #!/usr/bin/env python3
 """
 MDF 재단 최적화 - 실제 Guillotine Cut 시퀀스
@@ -594,137 +589,148 @@ class GeneticPacker(PackingStrategy):
 
 # ============= 메인 실행 부분 =============
 
-pieces = [
-    (800, 310, 2),
-    (644, 310, 3),
-    (371, 270, 4),
-    (369, 640, 2),
-]
+def run_optimization():
+    """최적화 실행"""
+    pieces = [
+        (800, 310, 2),
+        (644, 310, 3),
+        (371, 270, 4),
+        (369, 640, 2),
+    ]
 
-PLATE_WIDTH = 2420
-PLATE_HEIGHT = 1210
-KERF = 5
+    PLATE_WIDTH = 2440
+    PLATE_HEIGHT = 1220
+    KERF = 5
 
-print("="*60)
-print("MDF 재단 최적화 - 실제 Guillotine Cut")
-print("="*60)
-print("1. 정렬 우선 자유 공간")
-print("2. 하이브리드")
-print("3. 유전 알고리즘 (추천)")
-print("="*60)
+    print("="*60)
+    print("MDF 재단 최적화 - 실제 Guillotine Cut")
+    print("="*60)
+    print("1. 정렬 우선 자유 공간")
+    print("2. 하이브리드")
+    print("3. 유전 알고리즘 (추천)")
+    print("="*60)
 
-strategy_choice = input("전략 선택 (1/2/3, 기본값 3): ").strip() or "3"
+    strategy_choice = input("전략 선택 (1/2/3, 기본값 3): ").strip() or "3"
 
-if strategy_choice == "2":
-    packer = HybridPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
-    print("\n하이브리드 전략 선택")
-elif strategy_choice == "3":
-    packer = GeneticPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
-    print("\n유전 알고리즘 전략 선택")
-else:
-    packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
-    print("\n정렬 우선 자유 공간 전략 선택")
+    if strategy_choice == "2":
+        packer = HybridPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
+        print("\n하이브리드 전략 선택")
+    elif strategy_choice == "3":
+        packer = GeneticPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
+        print("\n유전 알고리즘 전략 선택")
+    else:
+        packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
+        print("\n정렬 우선 자유 공간 전략 선택")
 
-plates = packer.pack(pieces)
+    plates = packer.pack(pieces)
 
-# 색상
-piece_types = set(f"{w}x{h}" for w, h, _ in pieces)
-colors = {ptype: plt.cm.Set3(i / len(piece_types)) 
-          for i, ptype in enumerate(sorted(piece_types))}
+    # 색상
+    piece_types = set(f"{w}x{h}" for w, h, _ in pieces)
+    colors = {ptype: plt.cm.Set3(i / len(piece_types))
+              for i, ptype in enumerate(sorted(piece_types))}
 
-# 시각화
-fig, axes = plt.subplots(1, len(plates), figsize=(10 * len(plates), 5))
-if len(plates) == 1:
-    axes = [axes]
+    # 시각화
+    fig, axes = plt.subplots(1, len(plates), figsize=(10 * len(plates), 5))
+    if len(plates) == 1:
+        axes = [axes]
 
-for plot_idx, plate in enumerate(plates):
-    ax = axes[plot_idx]
-    
+    for plot_idx, plate in enumerate(plates):
+        ax = axes[plot_idx]
+
+        print(f"\n{'='*60}")
+        print(f"원판 {plot_idx + 1}")
+        print(f"배치된 조각: {len(plate['pieces'])}개")
+        print(f"절단 횟수: {len(plate['cuts'])}회\n")
+
+        # 절단선 순서 출력
+        print("절단 순서:")
+        for cut in plate['cuts']:
+            direction = "수평" if cut['direction'] == 'H' else "수직"
+            print(f"  {cut['order']:2d}. {direction} {cut['position']:4.0f}mm "
+                  f"(영역 {cut['region_x']:.0f},{cut['region_y']:.0f} "
+                  f"{cut['region_w']:.0f}×{cut['region_h']:.0f})")
+
+        ax.add_patch(MPLRect((0, 0), PLATE_WIDTH, PLATE_HEIGHT,
+                             fill=False, edgecolor='black', linewidth=2))
+
+        total_area = 0
+        for piece in plate['pieces']:
+            x, y = piece['x'], piece['y']
+            w, h = piece['placed_w'], piece['placed_h']
+            orig = piece['original']
+
+            piece_type = f"{orig[0]}x{orig[1]}"
+            color = colors[piece_type]
+
+            rect_patch = MPLRect((x, y), w, h,
+                                linewidth=1, edgecolor='black',
+                                facecolor=color, alpha=0.7)
+            ax.add_patch(rect_patch)
+
+            cx, cy = x + w/2, y + h/2
+            label = f"{w}×{h}"
+            if piece['rotated']:
+                label += "\n(회전)"
+            ax.text(cx, cy, label, ha='center', va='center',
+                   fontsize=8, fontweight='bold')
+
+            total_area += w * h
+
+        # 절단선 - 영역 내에서만
+        for cut in plate['cuts']:
+            if cut['direction'] == 'H':
+                ax.plot([cut['start'], cut['end']],
+                       [cut['position'], cut['position']],
+                       'r-', linewidth=2.5, alpha=0.8)
+                mid_x = (cut['start'] + cut['end']) / 2
+                ax.text(mid_x, cut['position'], str(cut['order']),
+                       ha='center', va='bottom', fontsize=11,
+                       fontweight='bold', color='red',
+                       bbox=dict(boxstyle='circle,pad=0.3', facecolor='white',
+                                edgecolor='red', linewidth=2))
+            else:
+                ax.plot([cut['position'], cut['position']],
+                       [cut['start'], cut['end']],
+                       'b-', linewidth=2.5, alpha=0.8)
+                mid_y = (cut['start'] + cut['end']) / 2
+                ax.text(cut['position'], mid_y, str(cut['order']),
+                       ha='left', va='center', fontsize=11,
+                       fontweight='bold', color='blue',
+                       bbox=dict(boxstyle='circle,pad=0.3', facecolor='white',
+                                edgecolor='blue', linewidth=2))
+
+        usage = total_area / (PLATE_WIDTH * PLATE_HEIGHT) * 100
+        print(f"\n  사용률: {usage:.1f}%")
+
+        ax.set_xlim(0, PLATE_WIDTH)
+        ax.set_ylim(0, PLATE_HEIGHT)
+        ax.set_aspect('equal')
+        ax.set_xlabel('가로 (mm)')
+        ax.set_ylabel('세로 (mm)')
+        ax.set_title(f'원판 {plot_idx + 1} (2440×1220)\n사용률: {usage:.1f}% | 절단: {len(plate["cuts"])}회',
+                    fontsize=12, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+
     print(f"\n{'='*60}")
-    print(f"원판 {plot_idx + 1}")
-    print(f"배치된 조각: {len(plate['pieces'])}개")
-    print(f"절단 횟수: {len(plate['cuts'])}회\n")
-    
-    # 절단선 순서 출력
-    print("절단 순서:")
-    for cut in plate['cuts']:
-        direction = "수평" if cut['direction'] == 'H' else "수직"
-        print(f"  {cut['order']:2d}. {direction} {cut['position']:4.0f}mm "
-              f"(영역 {cut['region_x']:.0f},{cut['region_y']:.0f} "
-              f"{cut['region_w']:.0f}×{cut['region_h']:.0f})")
-    
-    ax.add_patch(MPLRect((0, 0), PLATE_WIDTH, PLATE_HEIGHT, 
-                         fill=False, edgecolor='black', linewidth=2))
-    
-    total_area = 0
-    for piece in plate['pieces']:
-        x, y = piece['x'], piece['y']
-        w, h = piece['placed_w'], piece['placed_h']
-        orig = piece['original']
-        
-        piece_type = f"{orig[0]}x{orig[1]}"
-        color = colors[piece_type]
-        
-        rect_patch = MPLRect((x, y), w, h,
-                            linewidth=1, edgecolor='black', 
-                            facecolor=color, alpha=0.7)
-        ax.add_patch(rect_patch)
-        
-        cx, cy = x + w/2, y + h/2
-        label = f"{w}×{h}"
-        if piece['rotated']:
-            label += "\n(회전)"
-        ax.text(cx, cy, label, ha='center', va='center', 
-               fontsize=8, fontweight='bold')
-        
-        total_area += w * h
-    
-    # 절단선 - 영역 내에서만
-    for cut in plate['cuts']:
-        if cut['direction'] == 'H':
-            ax.plot([cut['start'], cut['end']], 
-                   [cut['position'], cut['position']], 
-                   'r-', linewidth=2.5, alpha=0.8)
-            mid_x = (cut['start'] + cut['end']) / 2
-            ax.text(mid_x, cut['position'], str(cut['order']), 
-                   ha='center', va='bottom', fontsize=11, 
-                   fontweight='bold', color='red',
-                   bbox=dict(boxstyle='circle,pad=0.3', facecolor='white', 
-                            edgecolor='red', linewidth=2))
-        else:
-            ax.plot([cut['position'], cut['position']], 
-                   [cut['start'], cut['end']], 
-                   'b-', linewidth=2.5, alpha=0.8)
-            mid_y = (cut['start'] + cut['end']) / 2
-            ax.text(cut['position'], mid_y, str(cut['order']), 
-                   ha='left', va='center', fontsize=11, 
-                   fontweight='bold', color='blue',
-                   bbox=dict(boxstyle='circle,pad=0.3', facecolor='white', 
-                            edgecolor='blue', linewidth=2))
-    
-    usage = total_area / (PLATE_WIDTH * PLATE_HEIGHT) * 100
-    print(f"\n  사용률: {usage:.1f}%")
-    
-    ax.set_xlim(0, PLATE_WIDTH)
-    ax.set_ylim(0, PLATE_HEIGHT)
-    ax.set_aspect('equal')
-    ax.set_xlabel('가로 (mm)')
-    ax.set_ylabel('세로 (mm)')
-    ax.set_title(f'원판 {plot_idx + 1} (2420×1210)\n사용률: {usage:.1f}% | 절단: {len(plate["cuts"])}회', 
-                fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3)
+    print(f"총 사용 원판: {len(plates)}장")
+    print(f"총 절단 횟수: {sum(len(p['cuts']) for p in plates)}회")
 
-print(f"\n{'='*60}")
-print(f"총 사용 원판: {len(plates)}장")
-print(f"총 절단 횟수: {sum(len(p['cuts']) for p in plates)}회")
+    legend_elements = [patches.Patch(facecolor=colors[ptype], alpha=0.7,
+                                    edgecolor='black', label=ptype)
+                      for ptype in sorted(piece_types)]
+    fig.legend(handles=legend_elements, loc='upper center',
+              bbox_to_anchor=(0.5, 0.98), ncol=len(piece_types))
 
-legend_elements = [patches.Patch(facecolor=colors[ptype], alpha=0.7, 
-                                edgecolor='black', label=ptype)
-                  for ptype in sorted(piece_types)]
-fig.legend(handles=legend_elements, loc='upper center', 
-          bbox_to_anchor=(0.5, 0.98), ncol=len(piece_types))
+    plt.tight_layout()
+    plt.savefig('mdf_cutting_guillotine.png', dpi=150, bbox_inches='tight')
+    print(f"\n시각화 파일 저장: mdf_cutting_guillotine.png")
+    plt.show()
 
-plt.tight_layout()
-plt.savefig('mdf_cutting_guillotine.png', dpi=150, bbox_inches='tight')
-print(f"\n시각화 파일 저장: mdf_cutting_guillotine.png")
-plt.show()
+
+def main():
+    """CLI 엔트리 포인트"""
+    run_optimization()
+
+
+if __name__ == "__main__":
+    main()
