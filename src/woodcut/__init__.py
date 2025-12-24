@@ -94,66 +94,289 @@ class PackingStrategy(ABC):
         
         root_region = Region(0, 0, self.plate_width, self.plate_height)
         root_region.pieces = plate['pieces']
-        
+
         self._split_region(root_region, plate['cuts'], cut_order)
-    
-    def _split_region(self, region, cuts, cut_order):
-        """영역을 재귀적으로 분할"""
-        if len(region.pieces) <= 1:
-            return
-        
+
+        # 후처리: 모든 조각의 placed_w/h 최종 설정
+        for piece in plate['pieces']:
+            if 'placed_w' not in piece:
+                piece['placed_w'] = piece['height'] if piece.get('rotated') else piece['width']
+            if 'placed_h' not in piece:
+                piece['placed_h'] = piece['width'] if piece.get('rotated') else piece['height']
+
+    def _all_pieces_exact(self, region):
+        """영역 내 모든 조각이 정확한 크기인지 확인"""
+        for piece in region.pieces:
+            # placed_w, placed_h가 없으면 아직 트리밍되지 않음
+            if 'placed_w' not in piece or 'placed_h' not in piece:
+                return False
+
+            actual_w = piece['placed_w']
+            actual_h = piece['placed_h']
+
+            # 회전 여부에 따라 필요한 크기 결정
+            if piece.get('rotated', False):
+                # 회전된 경우: placed_w는 원래의 height, placed_h는 원래의 width
+                required_w = piece['height']
+                required_h = piece['width']
+            else:
+                required_w = piece['width']
+                required_h = piece['height']
+
+            # 1mm 오차 허용
+            if abs(actual_w - required_w) > 1 or abs(actual_h - required_h) > 1:
+                return False
+        return True
+
+    def _generate_trimming_cuts(self, region):
+        """조각들을 정확한 크기로 트리밍하는 절단선 생성"""
+        trimming_cuts = []
+
+        # 모든 조각의 경계선 수집 (필요한 크기 기준)
         y_boundaries = set()
         x_boundaries = set()
-        
+
         for piece in region.pieces:
-            y_boundaries.add(piece['y'] + piece['placed_h'])
-            x_boundaries.add(piece['x'] + piece['placed_w'])
-        
-        best_cut = None
-        best_score = 0
-        
-        # 수평 절단 시도
-        for y in sorted(y_boundaries):
-            if y <= region.y or y >= region.y + region.height:
-                continue
-            
-            above = [p for p in region.pieces if p['y'] >= y]
-            below = [p for p in region.pieces if p['y'] + p['placed_h'] <= y]
-            
-            if len(above) + len(below) == len(region.pieces) and len(above) > 0 and len(below) > 0:
-                score = min(len(above), len(below))
-                if score > best_score:
-                    best_score = score
-                    best_cut = {
-                        'direction': 'H',
-                        'position': y,
-                        'above': above,
-                        'below': below
-                    }
-        
-        # 수직 절단 시도
-        for x in sorted(x_boundaries):
-            if x <= region.x or x >= region.x + region.width:
-                continue
-            
-            right = [p for p in region.pieces if p['x'] >= x]
-            left = [p for p in region.pieces if p['x'] + p['placed_w'] <= x]
-            
-            if len(right) + len(left) == len(region.pieces) and len(right) > 0 and len(left) > 0:
-                score = min(len(right), len(left))
-                if score > best_score:
-                    best_score = score
-                    best_cut = {
-                        'direction': 'V',
-                        'position': x,
-                        'left': left,
-                        'right': right
-                    }
-        
-        if not best_cut:
+            # 회전 고려: 필요한 크기 계산
+            req_w = piece['height'] if piece.get('rotated', False) else piece['width']
+            req_h = piece['width'] if piece.get('rotated', False) else piece['height']
+
+            # 조각의 필요한 끝 위치
+            y_boundaries.add((piece['y'] + req_h, req_h))
+            x_boundaries.add((piece['x'] + req_w, req_w))
+
+        # 수평 절단선: 같은 y 시작점의 조각들 중 최대 높이로 절단
+        # 먼저 y 시작점별로 그룹화
+        y_groups = {}
+        for piece in region.pieces:
+            y_start = piece['y']
+            if y_start not in y_groups:
+                y_groups[y_start] = []
+            y_groups[y_start].append(piece)
+
+        # 각 y 그룹에 대해 최대 필요 높이 찾기
+        for y_start, pieces_at_y in y_groups.items():
+            max_req_h = 0
+            for p in pieces_at_y:
+                p_req_h = p['width'] if p.get('rotated', False) else p['height']
+                max_req_h = max(max_req_h, p_req_h)
+
+            cut_y = y_start + max_req_h
+
+            if region.y < cut_y < region.y + region.height:
+                # 이 절단으로 영향받는 조각들 (같은 y에서 시작하는 모든 조각)
+                affected_pieces = pieces_at_y
+
+                # 아래쪽에 다른 조각이 있는지 확인
+                pieces_below = []
+                for p in region.pieces:
+                    if p not in pieces_at_y:  # 다른 y 시작점
+                        p_req_h = p['width'] if p.get('rotated', False) else p['height']
+                        actual_h = p.get('placed_h', p_req_h)
+                        if p['y'] + actual_h <= cut_y:
+                            pieces_below.append(p)
+
+                # 절단이 필요한 경우:
+                # 1) 아래쪽에 다른 조각이 있거나
+                # 2) 여러 조각이 있거나
+                # 3) 조각 1개라도 필요한 높이가 영역 높이보다 작으면 트리밍 필요
+                needs_cut = (len(pieces_below) > 0 or
+                           len(pieces_at_y) > 1 or
+                           (len(pieces_at_y) == 1 and max_req_h < region.height - 1))
+
+                if needs_cut:
+                    trimming_cuts.append({
+                        'type': 'horizontal',
+                        'position': cut_y,
+                        'affects': len(affected_pieces),
+                        'priority': 1000 + len(affected_pieces)
+                    })
+
+        # 수직 절단선: 같은 x 시작점의 조각들 중 최대 너비로 절단
+        # 먼저 x 시작점별로 그룹화
+        x_groups = {}
+        for piece in region.pieces:
+            x_start = piece['x']
+            if x_start not in x_groups:
+                x_groups[x_start] = []
+            x_groups[x_start].append(piece)
+
+        # 각 x 그룹에 대해 최대 필요 너비 찾기
+        for x_start, pieces_at_x in x_groups.items():
+            max_req_w = 0
+            for p in pieces_at_x:
+                p_req_w = p['height'] if p.get('rotated', False) else p['width']
+                max_req_w = max(max_req_w, p_req_w)
+
+            cut_x = x_start + max_req_w
+
+            if region.x < cut_x < region.x + region.width:
+                # 이 절단으로 영향받는 조각들 (같은 x에서 시작하는 모든 조각)
+                affected_pieces = pieces_at_x
+
+                # 왼쪽에 다른 조각이 있는지 확인
+                pieces_left = []
+                for p in region.pieces:
+                    if p not in pieces_at_x:  # 다른 x 시작점
+                        p_req_w = p['height'] if p.get('rotated', False) else p['width']
+                        actual_w = p.get('placed_w', p_req_w)
+                        if p['x'] + actual_w <= cut_x:
+                            pieces_left.append(p)
+
+                # 절단이 필요한 경우:
+                # 1) 왼쪽에 다른 조각이 있거나
+                # 2) 여러 조각이 있거나
+                # 3) 조각 1개라도 필요한 너비가 영역 너비보다 작으면 트리밍 필요
+                needs_cut = (len(pieces_left) > 0 or
+                           len(pieces_at_x) > 1 or
+                           (len(pieces_at_x) == 1 and max_req_w < region.width - 1))
+
+                if needs_cut:
+                    trimming_cuts.append({
+                        'type': 'vertical',
+                        'position': cut_x,
+                        'affects': len(affected_pieces),
+                        'priority': 1000 + len(affected_pieces)
+                    })
+
+        return trimming_cuts
+
+    def _generate_separation_cuts(self, region):
+        """이미 트림된 조각들을 분리하는 절단선 생성"""
+        separation_cuts = []
+
+        # 수평 분리선: 조각의 하단 + kerf 위치
+        y_separators = set()
+        for piece in region.pieces:
+            # 회전 고려: 실제 배치된 높이 사용
+            req_h = piece['width'] if piece.get('rotated', False) else piece['height']
+            sep_y = piece['y'] + req_h + self.kerf
+            # 영역 내부이고, 다른 조각과의 경계인 경우
+            if region.y < sep_y < region.y + region.height:
+                y_separators.add(sep_y)
+
+        for sep_y in y_separators:
+            # 이 절단선이 실제로 조각들을 분리하는지 확인
+            above = [p for p in region.pieces if p['y'] >= sep_y]
+            below = []
+            for p in region.pieces:
+                req_h = p['width'] if p.get('rotated', False) else p['height']
+                if p['y'] + req_h < sep_y:
+                    below.append(p)
+
+            if len(above) > 0 and len(below) > 0:
+                separation_cuts.append({
+                    'type': 'horizontal',
+                    'position': sep_y,
+                    'affects': 1,
+                    'priority': min(len(above), len(below))  # 균형 잡힌 분리 우선
+                })
+
+        # 수직 분리선: 조각의 우측 + kerf 위치
+        x_separators = set()
+        for piece in region.pieces:
+            # 회전 고려: 실제 배치된 너비 사용
+            req_w = piece['height'] if piece.get('rotated', False) else piece['width']
+            sep_x = piece['x'] + req_w + self.kerf
+            # 영역 내부이고, 다른 조각과의 경계인 경우
+            if region.x < sep_x < region.x + region.width:
+                x_separators.add(sep_x)
+
+        for sep_x in x_separators:
+            # 이 절단선이 실제로 조각들을 분리하는지 확인
+            right = [p for p in region.pieces if p['x'] >= sep_x]
+            left = []
+            for p in region.pieces:
+                req_w = p['height'] if p.get('rotated', False) else p['width']
+                if p['x'] + req_w < sep_x:
+                    left.append(p)
+
+            if len(right) > 0 and len(left) > 0:
+                separation_cuts.append({
+                    'type': 'vertical',
+                    'position': sep_x,
+                    'affects': 1,
+                    'priority': min(len(right), len(left))  # 균형 잡힌 분리 우선
+                })
+
+        return separation_cuts
+
+    def _split_region(self, region, cuts, cut_order):
+        """영역을 재귀적으로 분할 (차원 트리밍 우선)"""
+        # 조각이 없으면 종료
+        if not region.pieces:
             return
-        
-        if best_cut['direction'] == 'H':
+
+        # 모든 조각이 정확한 크기면 종료
+        if self._all_pieces_exact(region):
+            # 조각이 1개보다 많으면 분리 필요
+            if len(region.pieces) <= 1:
+                return
+
+        # Phase 1: 트리밍 절단선 생성
+        trimming_cuts = self._generate_trimming_cuts(region)
+
+        # Phase 2: 분리 절단선 생성
+        separation_cuts = self._generate_separation_cuts(region)
+
+        # 우선순위로 정렬
+        # 1순위: 트리밍(1000+) vs 분리(낮음)
+        # 2순위: 같은 타입 내에서는 position이 작은 것 먼저 (아래→위, 왼→오)
+        #        이유: 같은 시작점에서 다른 높이 조각들이 있을 때 작은 높이를 먼저 분리
+        all_cuts = sorted(
+            trimming_cuts + separation_cuts,
+            key=lambda c: (c['priority'], -c['position']),  # priority 높은 순, position 낮은 순
+            reverse=True
+        )
+
+        # 절단선이 없으면 종료
+        if not all_cuts:
+            return
+
+        # 최우선 절단 선택
+        best_cut = all_cuts[0]
+
+        # 절단 실행
+        if best_cut['type'] == 'horizontal':
+            # 수평 절단: 조각들을 위/아래로 분할
+            above = [p for p in region.pieces if p['y'] >= best_cut['position']]
+            below = []
+            for p in region.pieces:
+                # 현재 실제 배치된 높이 사용
+                actual_h = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+                if p['y'] + actual_h <= best_cut['position']:
+                    below.append(p)
+
+            # 절단선이 조각들을 올바르게 분리하는지 확인
+            if len(above) + len(below) != len(region.pieces):
+                # 일부 조각이 절단선을 가로지름 - 트리밍 절단
+                # 절단선 아래쪽에 걸친 조각들의 placed_h 업데이트
+                for piece in region.pieces:
+                    actual_h = piece.get('placed_h', piece['width'] if piece.get('rotated') else piece['height'])
+                    if piece['y'] < best_cut['position'] < piece['y'] + actual_h:
+                        piece['placed_h'] = best_cut['position'] - piece['y']
+
+                # 다시 분류 - 트리밍된 조각을 어느 영역에 배치할지 결정
+                above = []
+                below = []
+                for p in region.pieces:
+                    if p['y'] >= best_cut['position']:
+                        above.append(p)
+                    else:
+                        # 아래쪽에 시작하는 조각
+                        actual_h = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+                        req_h = p['width'] if p.get('rotated', False) else p['height']
+
+                        # 트리밍 후에도 여전히 더 필요한 경우 → above 영역에서 계속 처리
+                        if actual_h < req_h - 1:  # 1mm 오차 허용
+                            above.append(p)
+                        # 정확한 크기가 되었거나 아래쪽에 완전히 속하는 경우
+                        elif p['y'] + actual_h <= best_cut['position']:
+                            below.append(p)
+                        # 그 외의 경우도 above에서 처리
+                        else:
+                            above.append(p)
+
             cuts.append({
                 'order': cut_order[0],
                 'direction': 'H',
@@ -166,27 +389,67 @@ class PackingStrategy(ABC):
                 'region_h': region.height
             })
             cut_order[0] += 1
-            
-            below_region = Region(
-                region.x, 
-                region.y,
-                region.width,
-                best_cut['position'] - region.y
-            )
-            below_region.pieces = best_cut['below']
-            
-            above_region = Region(
-                region.x,
-                best_cut['position'],
-                region.width,
-                region.y + region.height - best_cut['position']
-            )
-            above_region.pieces = best_cut['above']
-            
-            self._split_region(below_region, cuts, cut_order)
-            self._split_region(above_region, cuts, cut_order)
-            
-        else:
+
+            # 하위 영역 생성
+            if len(below) > 0:
+                below_region = Region(
+                    region.x,
+                    region.y,
+                    region.width,
+                    best_cut['position'] - region.y
+                )
+                below_region.pieces = below
+                self._split_region(below_region, cuts, cut_order)
+
+            if len(above) > 0:
+                above_region = Region(
+                    region.x,
+                    best_cut['position'],
+                    region.width,
+                    region.y + region.height - best_cut['position']
+                )
+                above_region.pieces = above
+                self._split_region(above_region, cuts, cut_order)
+
+        else:  # 수직 절단
+            right = [p for p in region.pieces if p['x'] >= best_cut['position']]
+            left = []
+            for p in region.pieces:
+                # 현재 실제 배치된 너비 사용
+                actual_w = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+                if p['x'] + actual_w <= best_cut['position']:
+                    left.append(p)
+
+            # 절단선이 조각들을 올바르게 분리하는지 확인
+            if len(right) + len(left) != len(region.pieces):
+                # 일부 조각이 절단선을 가로지름 - 트리밍 절단
+                # 절단선 좌측에 걸친 조각들의 placed_w 업데이트
+                for piece in region.pieces:
+                    actual_w = piece.get('placed_w', piece['height'] if piece.get('rotated') else piece['width'])
+                    if piece['x'] < best_cut['position'] < piece['x'] + actual_w:
+                        piece['placed_w'] = best_cut['position'] - piece['x']
+
+                # 다시 분류 - 트리밍된 조각을 어느 영역에 배치할지 결정
+                right = []
+                left = []
+                for p in region.pieces:
+                    if p['x'] >= best_cut['position']:
+                        right.append(p)
+                    else:
+                        # 왼쪽에 시작하는 조각
+                        actual_w = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+                        req_w = p['height'] if p.get('rotated', False) else p['width']
+
+                        # 트리밍 후에도 여전히 더 필요한 경우 → right 영역에서 계속 처리
+                        if actual_w < req_w - 1:  # 1mm 오차 허용
+                            right.append(p)
+                        # 정확한 크기가 되었거나 왼쪽에 완전히 속하는 경우
+                        elif p['x'] + actual_w <= best_cut['position']:
+                            left.append(p)
+                        # 그 외의 경우도 right에서 처리
+                        else:
+                            right.append(p)
+
             cuts.append({
                 'order': cut_order[0],
                 'direction': 'V',
@@ -199,25 +462,27 @@ class PackingStrategy(ABC):
                 'region_h': region.height
             })
             cut_order[0] += 1
-            
-            left_region = Region(
-                region.x,
-                region.y,
-                best_cut['position'] - region.x,
-                region.height
-            )
-            left_region.pieces = best_cut['left']
-            
-            right_region = Region(
-                best_cut['position'],
-                region.y,
-                region.x + region.width - best_cut['position'],
-                region.height
-            )
-            right_region.pieces = best_cut['right']
-            
-            self._split_region(left_region, cuts, cut_order)
-            self._split_region(right_region, cuts, cut_order)
+
+            # 하위 영역 생성
+            if len(left) > 0:
+                left_region = Region(
+                    region.x,
+                    region.y,
+                    best_cut['position'] - region.x,
+                    region.height
+                )
+                left_region.pieces = left
+                self._split_region(left_region, cuts, cut_order)
+
+            if len(right) > 0:
+                right_region = Region(
+                    best_cut['position'],
+                    region.y,
+                    region.x + region.width - best_cut['position'],
+                    region.height
+                )
+                right_region.pieces = right
+                self._split_region(right_region, cuts, cut_order)
 
 
 class AlignedFreeSpacePacker(PackingStrategy):
@@ -309,8 +574,8 @@ class AlignedFreeSpacePacker(PackingStrategy):
         
         plate['pieces'].append({
             **piece, 'x': x, 'y': y,
-            'placed_w': w, 'placed_h': h,
             'rotated': placement['rotated']
+            # placed_w, placed_h는 절단 알고리즘이 설정
         })
         
         plate['free_spaces'].remove(space)
@@ -413,8 +678,8 @@ class HybridPacker(PackingStrategy):
         
         plate['pieces'].append({
             **piece, 'x': x, 'y': y,
-            'placed_w': w, 'placed_h': h,
             'rotated': placement['rotated']
+            # placed_w, placed_h는 절단 알고리즘이 설정
         })
         
         plate['free_spaces'].remove(space)
@@ -543,8 +808,8 @@ class GeneticPacker(PackingStrategy):
         
         plate['pieces'].append({
             **piece, 'x': x, 'y': y,
-            'placed_w': w, 'placed_h': h,
             'rotated': placement['rotated']
+            # placed_w, placed_h는 절단 알고리즘이 설정
         })
         
         plate['free_spaces'].remove(space)
@@ -650,13 +915,52 @@ def run_optimization():
                   f"(영역 {cut['region_x']:.0f},{cut['region_y']:.0f} "
                   f"{cut['region_w']:.0f}×{cut['region_h']:.0f})")
 
+        # 조각들의 최종 크기 검증
+        print("\n조각 크기 검증 (상세):")
+        all_exact = True
+        for i, piece in enumerate(plate['pieces']):
+            required = f"{piece['width']}×{piece['height']}"
+
+            # 회전 고려
+            if piece.get('rotated', False):
+                req_w, req_h = piece['height'], piece['width']
+            else:
+                req_w, req_h = piece['width'], piece['height']
+
+            # placed_w/h가 없으면 아직 트리밍 안됨
+            if 'placed_w' not in piece or 'placed_h' not in piece:
+                actual = "트리밍 전"
+                match = "✗"
+                all_exact = False
+            else:
+                actual = f"{piece['placed_w']}×{piece['placed_h']}"
+                match = "✓" if (abs(piece['placed_w'] - req_w) <= 1 and
+                               abs(piece['placed_h'] - req_h) <= 1) else "✗"
+                if match == "✗":
+                    all_exact = False
+
+            pos = f"({piece['x']:.0f},{piece['y']:.0f})"
+            print(f"  [{i+1}] {match} 위치: {pos}, 필요: {required}, 실제: {actual}, 기대: {req_w}×{req_h}")
+
+        if all_exact:
+            print("\n  ✅ 모든 조각이 정확한 크기입니다")
+        else:
+            print("\n  ❌ 일부 조각이 부정확합니다")
+
         ax.add_patch(MPLRect((0, 0), PLATE_WIDTH, PLATE_HEIGHT,
                              fill=False, edgecolor='black', linewidth=2))
 
         total_area = 0
         for piece in plate['pieces']:
             x, y = piece['x'], piece['y']
-            w, h = piece['placed_w'], piece['placed_h']
+            # placed_w/h가 없으면 회전 고려한 크기 사용
+            if 'placed_w' in piece and 'placed_h' in piece:
+                w, h = piece['placed_w'], piece['placed_h']
+            else:
+                if piece.get('rotated', False):
+                    w, h = piece['height'], piece['width']
+                else:
+                    w, h = piece['width'], piece['height']
             orig = piece['original']
 
             piece_type = f"{orig[0]}x{orig[1]}"
