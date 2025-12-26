@@ -33,15 +33,18 @@ def main():
     print("="*60)
 
     # 톱날 두께 (kerf) 입력
-    kerf_input = input("톱날 두께 (kerf, mm): ").strip()
-    try:
-        kerf = int(kerf_input)
-        if kerf <= 0:
-            print("❌ 오류: 톱날 두께는 양수여야 합니다.")
+    kerf_input = input("톱날 두께 (kerf, mm, 기본값 5): ").strip()
+    if kerf_input == "":
+        kerf = 5
+    else:
+        try:
+            kerf = int(kerf_input)
+            if kerf <= 0:
+                print("❌ 오류: 톱날 두께는 양수여야 합니다.")
+                return
+        except ValueError:
+            print("❌ 오류: 숫자를 입력해주세요.")
             return
-    except ValueError:
-        print("❌ 오류: 숫자를 입력해주세요.")
-        return
     print(f"✓ 톱날 두께: {kerf}mm")
 
     # 회전 허용 여부
