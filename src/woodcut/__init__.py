@@ -56,18 +56,23 @@ def main():
     match strategy_choice:
         case "1":
             packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            strategy_name = "aligned_free_space"
             print("\n정렬 우선 자유 공간 전략 선택")
         case "2":
             packer = GeneticAlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            strategy_name = "genetic_aligned"
             print("\n유전 알고리즘 + AlignedFreeSpace 전략 선택")
         case "3":
             packer = BeamSearchPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation, beam_width=3)
+            strategy_name = "beam_search"
             print("\nBeam Search 전략 선택 (beam_width=3)")
         case "4":
             packer = LookAheadPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            strategy_name = "lookahead"
             print("\nLook-ahead 전략 선택")
         case "5":
             packer = GeneticGroupPreservingPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            strategy_name = "genetic_group"
             print("\n그룹 보존 유전 알고리즘 전략 선택")
         case _:
             print(f"\n❌ 오류: 잘못된 선택 '{strategy_choice}'")
@@ -78,7 +83,7 @@ def main():
     plates = packer.pack(pieces)
 
     # 시각화
-    visualize_solution(plates, pieces, PLATE_WIDTH, PLATE_HEIGHT)
+    visualize_solution(plates, pieces, PLATE_WIDTH, PLATE_HEIGHT, strategy_name)
 
 
 if __name__ == "__main__":

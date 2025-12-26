@@ -5,6 +5,8 @@ import matplotlib.patches as patches
 from matplotlib.patches import Rectangle as MPLRect
 from matplotlib import font_manager
 import platform
+from datetime import datetime
+from pathlib import Path
 
 
 def setup_korean_font():
@@ -26,7 +28,7 @@ def setup_korean_font():
     print("⚠️  한글 폰트를 찾지 못했습니다.")
 
 
-def visualize_solution(plates, pieces, plate_width, plate_height):
+def visualize_solution(plates, pieces, plate_width, plate_height, strategy_name="unknown"):
     """시각화 함수
 
     Args:
@@ -34,6 +36,7 @@ def visualize_solution(plates, pieces, plate_width, plate_height):
         pieces: 원본 조각 리스트 [(width, height, count), ...]
         plate_width: 원판 너비 (mm)
         plate_height: 원판 높이 (mm)
+        strategy_name: 전략 이름 (파일명에 사용)
     """
     # 색상
     piece_types = set(f"{w}x{h}" for w, h, _ in pieces)
@@ -172,8 +175,18 @@ def visualize_solution(plates, pieces, plate_width, plate_height):
               bbox_to_anchor=(0.5, 0.98), ncol=len(piece_types))
 
     plt.tight_layout()
-    plt.savefig('mdf_cutting_guillotine.png', dpi=150, bbox_inches='tight')
-    print(f"\n시각화 파일 저장: mdf_cutting_guillotine.png")
+
+    # output 디렉토리 생성
+    output_dir = Path('output')
+    output_dir.mkdir(exist_ok=True)
+
+    # 파일명 생성: cut_<method name>_<datetime>.png
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f'cut_{strategy_name}_{timestamp}.png'
+    filepath = output_dir / filename
+
+    plt.savefig(filepath, dpi=150, bbox_inches='tight')
+    print(f"\n시각화 파일 저장: {filepath}")
     plt.show()
 
 
