@@ -53,21 +53,26 @@ def main():
 
     strategy_choice = input("전략 선택 (1-5, 기본값 5): ").strip() or "5"
 
-    if strategy_choice == "1":
-        packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
-        print("\n정렬 우선 자유 공간 전략 선택")
-    elif strategy_choice == "2":
-        packer = GeneticAlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
-        print("\n유전 알고리즘 + AlignedFreeSpace 전략 선택")
-    elif strategy_choice == "3":
-        packer = BeamSearchPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation, beam_width=3)
-        print("\nBeam Search 전략 선택 (beam_width=3)")
-    elif strategy_choice == "4":
-        packer = LookAheadPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
-        print("\nLook-ahead 전략 선택")
-    else:  # "5" or default
-        packer = GeneticGroupPreservingPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
-        print("\n그룹 보존 유전 알고리즘 전략 선택")
+    match strategy_choice:
+        case "1":
+            packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            print("\n정렬 우선 자유 공간 전략 선택")
+        case "2":
+            packer = GeneticAlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            print("\n유전 알고리즘 + AlignedFreeSpace 전략 선택")
+        case "3":
+            packer = BeamSearchPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation, beam_width=3)
+            print("\nBeam Search 전략 선택 (beam_width=3)")
+        case "4":
+            packer = LookAheadPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            print("\nLook-ahead 전략 선택")
+        case "5":
+            packer = GeneticGroupPreservingPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+            print("\n그룹 보존 유전 알고리즘 전략 선택")
+        case _:
+            print(f"\n❌ 오류: 잘못된 선택 '{strategy_choice}'")
+            print("1-5 사이의 숫자를 입력해주세요.")
+            return
 
     # 패킹 실행
     plates = packer.pack(pieces)
