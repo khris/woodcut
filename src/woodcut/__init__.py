@@ -58,11 +58,12 @@ class FreeSpace:
 
 class PackingStrategy(ABC):
     """패킹 전략 베이스 클래스"""
-    
-    def __init__(self, plate_width, plate_height, kerf=5):
+
+    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True):
         self.plate_width = plate_width
         self.plate_height = plate_height
         self.kerf = kerf
+        self.allow_rotation = allow_rotation
     
     @abstractmethod
     def pack(self, pieces):
@@ -160,8 +161,12 @@ class PackingStrategy(ABC):
             for p in pieces_at_y:
                 p_req_h = p['width'] if p.get('rotated', False) else p['height']
                 max_req_h = max(max_req_h, p_req_h)
+                # 디버그: 조각 정보 출력
+                # print(f"  DEBUG: piece at y={p['y']}, size={p['width']}×{p['height']}, rotated={p.get('rotated')}, req_h={p_req_h}, placed_h={p.get('placed_h', 'None')}")
 
             cut_y = y_start + max_req_h
+            # 디버그: 계산된 절단 위치
+            # print(f"DEBUG TRIM: y_group at {y_start}, max_req_h={max_req_h}, cut_y={cut_y}, region=({region.x},{region.y} {region.width}×{region.height})")
 
             if region.y < cut_y < region.y + region.height:
                 # 이 절단으로 영향받는 조각들 (같은 y에서 시작하는 모든 조각)
@@ -307,16 +312,20 @@ class PackingStrategy(ABC):
         if not region.pieces:
             return
 
-        # 모든 조각이 정확한 크기면 종료
-        if self._all_pieces_exact(region):
+        # 모든 조각이 정확한 크기면 분리만 수행
+        all_exact = self._all_pieces_exact(region)
+
+        if all_exact:
             # 조각이 1개보다 많으면 분리 필요
             if len(region.pieces) <= 1:
                 return
+            # 트리밍은 필요없고 분리만 필요
+            trimming_cuts = []
+        else:
+            # Phase 1: 트리밍 절단선 생성 (정확한 크기 아닐 때만)
+            trimming_cuts = self._generate_trimming_cuts(region)
 
-        # Phase 1: 트리밍 절단선 생성
-        trimming_cuts = self._generate_trimming_cuts(region)
-
-        # Phase 2: 분리 절단선 생성
+        # Phase 2: 분리 절단선 생성 (항상)
         separation_cuts = self._generate_separation_cuts(region)
 
         # 우선순위로 정렬
@@ -353,7 +362,11 @@ class PackingStrategy(ABC):
                 # 절단선 아래쪽에 걸친 조각들의 placed_h 업데이트
                 for piece in region.pieces:
                     actual_h = piece.get('placed_h', piece['width'] if piece.get('rotated') else piece['height'])
-                    if piece['y'] < best_cut['position'] < piece['y'] + actual_h:
+                    if piece['y'] < best_cut['position'] <= piece['y'] + actual_h:
+                        # placed_h가 이미 정확하게 설정된 경우 덮어쓰지 않음
+                        req_h = piece['width'] if piece.get('rotated', False) else piece['height']
+                        if 'placed_h' in piece and abs(piece['placed_h'] - req_h) <= 1:
+                            continue  # 이미 정확한 크기
                         piece['placed_h'] = best_cut['position'] - piece['y']
 
                 # 다시 분류 - 트리밍된 조각을 어느 영역에 배치할지 결정
@@ -399,6 +412,14 @@ class PackingStrategy(ABC):
                     best_cut['position'] - region.y
                 )
                 below_region.pieces = below
+
+                # 영역 경계에 정확히 맞는 조각들의 placed_h 설정
+                for piece in below:
+                    req_h = piece['width'] if piece.get('rotated', False) else piece['height']
+                    # 조각이 영역을 꽉 채우는 경우 (y 시작점 + 필요 높이 = 영역 끝)
+                    if piece['y'] == below_region.y and abs(piece['y'] + req_h - (below_region.y + below_region.height)) <= 1:
+                        piece['placed_h'] = req_h
+
                 self._split_region(below_region, cuts, cut_order)
 
             if len(above) > 0:
@@ -409,6 +430,14 @@ class PackingStrategy(ABC):
                     region.y + region.height - best_cut['position']
                 )
                 above_region.pieces = above
+
+                # 영역 경계에 정확히 맞는 조각들의 placed_h 설정
+                for piece in above:
+                    req_h = piece['width'] if piece.get('rotated', False) else piece['height']
+                    # 조각이 영역을 꽉 채우는 경우 (y 시작점 + 필요 높이 = 영역 끝)
+                    if piece['y'] == above_region.y and abs(piece['y'] + req_h - (above_region.y + above_region.height)) <= 1:
+                        piece['placed_h'] = req_h
+
                 self._split_region(above_region, cuts, cut_order)
 
         else:  # 수직 절단
@@ -426,7 +455,11 @@ class PackingStrategy(ABC):
                 # 절단선 좌측에 걸친 조각들의 placed_w 업데이트
                 for piece in region.pieces:
                     actual_w = piece.get('placed_w', piece['height'] if piece.get('rotated') else piece['width'])
-                    if piece['x'] < best_cut['position'] < piece['x'] + actual_w:
+                    if piece['x'] < best_cut['position'] <= piece['x'] + actual_w:
+                        # placed_w가 이미 정확하게 설정된 경우 덮어쓰지 않음
+                        req_w = piece['height'] if piece.get('rotated', False) else piece['width']
+                        if 'placed_w' in piece and abs(piece['placed_w'] - req_w) <= 1:
+                            continue  # 이미 정확한 크기
                         piece['placed_w'] = best_cut['position'] - piece['x']
 
                 # 다시 분류 - 트리밍된 조각을 어느 영역에 배치할지 결정
@@ -472,6 +505,14 @@ class PackingStrategy(ABC):
                     region.height
                 )
                 left_region.pieces = left
+
+                # 영역 경계에 정확히 맞는 조각들의 placed_w 설정
+                for piece in left:
+                    req_w = piece['height'] if piece.get('rotated', False) else piece['width']
+                    # 조각이 영역을 꽉 채우는 경우 (x 시작점 + 필요 너비 = 영역 끝)
+                    if piece['x'] == left_region.x and abs(piece['x'] + req_w - (left_region.x + left_region.width)) <= 1:
+                        piece['placed_w'] = req_w
+
                 self._split_region(left_region, cuts, cut_order)
 
             if len(right) > 0:
@@ -482,6 +523,14 @@ class PackingStrategy(ABC):
                     region.height
                 )
                 right_region.pieces = right
+
+                # 영역 경계에 정확히 맞는 조각들의 placed_w 설정
+                for piece in right:
+                    req_w = piece['height'] if piece.get('rotated', False) else piece['width']
+                    # 조각이 영역을 꽉 채우는 경우 (x 시작점 + 필요 너비 = 영역 끝)
+                    if piece['x'] == right_region.x and abs(piece['x'] + req_w - (right_region.x + right_region.width)) <= 1:
+                        piece['placed_w'] = req_w
+
                 self._split_region(right_region, cuts, cut_order)
 
 
@@ -491,17 +540,17 @@ class AlignedFreeSpacePacker(PackingStrategy):
     def pack(self, pieces):
         all_pieces = self.expand_pieces(pieces)
         all_pieces.sort(key=lambda p: p['area'], reverse=True)
-        
+
         plates = []
         current_plate = {
             'pieces': [],
             'cuts': [],
             'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
         }
-        
+
         for piece in all_pieces:
             placement = self._find_best_placement(current_plate, piece)
-            
+
             if placement:
                 self._place_piece(current_plate, piece, placement)
             else:
@@ -523,152 +572,59 @@ class AlignedFreeSpacePacker(PackingStrategy):
         
         return plates
     
-    def _find_best_placement(self, plate, piece):
+    def _find_best_placement(self, plate, piece, preferred_rotation=None):
         w, h = piece['width'], piece['height']
-        
+
         existing_x = set([0])
         existing_y = set([0])
         for p in plate['pieces']:
             existing_x.add(p['x'])
-            existing_x.add(p['x'] + p['placed_w'] + self.kerf)
+            # placed_w/h가 아직 없으면 배치 크기 사용
+            pw = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+            ph = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+            existing_x.add(p['x'] + pw + self.kerf)
             existing_y.add(p['y'])
-            existing_y.add(p['y'] + p['placed_h'] + self.kerf)
-        
+            existing_y.add(p['y'] + ph + self.kerf)
+
         candidates = []
-        
+
         for space in plate['free_spaces']:
             if w + self.kerf <= space.width and h + self.kerf <= space.height:
                 x_aligned = 1 if space.x in existing_x else 0
                 y_aligned = 1 if space.y in existing_y else 0
                 alignment_score = x_aligned + y_aligned
                 waste = (space.width - w) * (space.height - h)
-                
+
+                # 선호 방향이면 보너스 (같은 크기 조각 그룹화)
+                rotation_bonus = 100 if preferred_rotation is False else 0
+
                 candidates.append({
                     'space': space, 'x': space.x, 'y': space.y,
                     'width': w, 'height': h, 'rotated': False,
-                    'alignment_score': alignment_score, 'waste': waste
+                    'alignment_score': alignment_score, 'waste': waste,
+                    'rotation_bonus': rotation_bonus
                 })
-            
-            if h + self.kerf <= space.width and w + self.kerf <= space.height:
+
+            if self.allow_rotation and h + self.kerf <= space.width and w + self.kerf <= space.height:
                 x_aligned = 1 if space.x in existing_x else 0
                 y_aligned = 1 if space.y in existing_y else 0
                 alignment_score = x_aligned + y_aligned
                 waste = (space.width - h) * (space.height - w)
-                
+
+                # 선호 방향이면 보너스 (같은 크기 조각 그룹화)
+                rotation_bonus = 100 if preferred_rotation is True else 0
+
                 candidates.append({
                     'space': space, 'x': space.x, 'y': space.y,
                     'width': h, 'height': w, 'rotated': True,
-                    'alignment_score': alignment_score, 'waste': waste
+                    'alignment_score': alignment_score, 'waste': waste,
+                    'rotation_bonus': rotation_bonus
                 })
-        
+
         if not candidates:
             return None
-        
-        candidates.sort(key=lambda c: (-c['alignment_score'], c['waste']))
-        return candidates[0]
-    
-    def _place_piece(self, plate, piece, placement):
-        space = placement['space']
-        x, y = placement['x'], placement['y']
-        w, h = placement['width'], placement['height']
-        
-        plate['pieces'].append({
-            **piece, 'x': x, 'y': y,
-            'rotated': placement['rotated']
-            # placed_w, placed_h는 절단 알고리즘이 설정
-        })
-        
-        plate['free_spaces'].remove(space)
-        
-        if space.width > w + self.kerf:
-            plate['free_spaces'].append(FreeSpace(
-                x + w + self.kerf, y,
-                space.width - w - self.kerf, h + self.kerf
-            ))
-        
-        if space.height > h + self.kerf:
-            plate['free_spaces'].append(FreeSpace(
-                x, y + h + self.kerf,
-                space.width, space.height - h - self.kerf
-            ))
 
-
-class HybridPacker(PackingStrategy):
-    """전략 2: 하이브리드"""
-    
-    def pack(self, pieces):
-        all_pieces = self.expand_pieces(pieces)
-        
-        from collections import defaultdict
-        height_groups = defaultdict(list)
-        
-        for piece in all_pieces:
-            min_dim = min(piece['width'], piece['height'])
-            height_groups[min_dim].append(piece)
-        
-        for group in height_groups.values():
-            group.sort(key=lambda p: p['area'], reverse=True)
-        
-        plates = []
-        current_plate = {
-            'pieces': [],
-            'cuts': [],
-            'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
-        }
-        
-        for height in sorted(height_groups.keys(), reverse=True):
-            group = height_groups[height]
-            
-            for piece in group:
-                placement = self._find_best_placement(current_plate, piece, height)
-                
-                if placement:
-                    self._place_piece(current_plate, piece, placement)
-                else:
-                    plates.append(current_plate)
-                    current_plate = {
-                        'pieces': [],
-                        'cuts': [],
-                        'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
-                    }
-                    placement = self._find_best_placement(current_plate, piece, height)
-                    if placement:
-                        self._place_piece(current_plate, piece, placement)
-        
-        if current_plate['pieces']:
-            plates.append(current_plate)
-        
-        for plate in plates:
-            self.generate_guillotine_cuts(plate)
-        
-        return plates
-    
-    def _find_best_placement(self, plate, piece, preferred_height):
-        w, h = piece['width'], piece['height']
-        candidates = []
-        
-        for space in plate['free_spaces']:
-            if w >= h:
-                check_w, check_h = w, h
-                rotated = False
-            else:
-                check_w, check_h = h, w
-                rotated = True
-            
-            if check_w + self.kerf <= space.width and check_h + self.kerf <= space.height:
-                same_row_bonus = 100 if any(p['y'] == space.y for p in plate['pieces']) else 0
-                waste = (space.width - check_w) * (space.height - check_h)
-                
-                candidates.append({
-                    'space': space, 'x': space.x, 'y': space.y,
-                    'width': check_w, 'height': check_h, 'rotated': rotated,
-                    'score': same_row_bonus - waste
-                })
-        
-        if not candidates:
-            return None
-        
-        candidates.sort(key=lambda c: -c['score'])
+        candidates.sort(key=lambda c: (-c['rotation_bonus'], -c['alignment_score'], c['waste']))
         return candidates[0]
     
     def _place_piece(self, plate, piece, placement):
@@ -699,17 +655,25 @@ class HybridPacker(PackingStrategy):
 
 class GeneticPacker(PackingStrategy):
     """전략 3: 유전 알고리즘"""
-    
+
+    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True):
+        super().__init__(plate_width, plate_height, kerf, allow_rotation)
+
     def pack(self, pieces):
         all_pieces = self.expand_pieces(pieces)
-        
+
         population_size = 20
         generations = 50
-        
+
         print(f"\n유전 알고리즘: 세대 {generations}개, 개체 {population_size}개")
-        
+
+        # 그룹화된 시퀀스를 초기 population에 포함 (작업 편의성)
         population = []
-        for _ in range(population_size):
+        grouped_sequence = self._create_grouped_sequence(all_pieces)
+        population.append(grouped_sequence)
+
+        # 나머지는 랜덤 (탐색 다양성 유지)
+        for _ in range(population_size - 1):
             individual = list(all_pieces)
             random.shuffle(individual)
             population.append(individual)
@@ -762,10 +726,10 @@ class GeneticPacker(PackingStrategy):
             'cuts': [],
             'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
         }
-        
+
         for piece in sequence:
             placement = self._find_placement(current_plate, piece)
-            
+
             if placement:
                 self._place_piece(current_plate, piece, placement)
             else:
@@ -778,28 +742,62 @@ class GeneticPacker(PackingStrategy):
                 placement = self._find_placement(current_plate, piece)
                 if placement:
                     self._place_piece(current_plate, piece, placement)
-        
+
         if current_plate['pieces']:
             plates.append(current_plate)
-        
+
         return plates
     
     def _find_placement(self, plate, piece):
+        """AlignedFreeSpacePacker와 동일한 정렬 우선 배치"""
         w, h = piece['width'], piece['height']
-        
+
+        # 기존 좌표 수집
+        existing_x = set([0])
+        existing_y = set([0])
+        for p in plate['pieces']:
+            existing_x.add(p['x'])
+            pw = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+            ph = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+            existing_x.add(p['x'] + pw + self.kerf)
+            existing_y.add(p['y'])
+            existing_y.add(p['y'] + ph + self.kerf)
+
+        candidates = []
+
         for space in plate['free_spaces']:
+            # 일반 방향
             if w + self.kerf <= space.width and h + self.kerf <= space.height:
-                return {
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - w) * (space.height - h)
+
+                candidates.append({
                     'space': space, 'x': space.x, 'y': space.y,
-                    'width': w, 'height': h, 'rotated': False
-                }
-            if h + self.kerf <= space.width and w + self.kerf <= space.height:
-                return {
+                    'width': w, 'height': h, 'rotated': False,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+            # 회전 방향
+            if self.allow_rotation and h + self.kerf <= space.width and w + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - h) * (space.height - w)
+
+                candidates.append({
                     'space': space, 'x': space.x, 'y': space.y,
-                    'width': h, 'height': w, 'rotated': True
-                }
-        
-        return None
+                    'width': h, 'height': w, 'rotated': True,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+        if not candidates:
+            return None
+
+        # 정렬 점수 높은 순, waste 낮은 순
+        candidates.sort(key=lambda c: (-c['alignment_score'], c['waste']))
+        return candidates[0]
     
     def _place_piece(self, plate, piece, placement):
         space = placement['space']
@@ -851,6 +849,775 @@ class GeneticPacker(PackingStrategy):
         i, j = random.sample(range(len(individual)), 2)
         individual[i], individual[j] = individual[j], individual[i]
 
+    def _create_grouped_sequence(self, pieces):
+        """같은 크기 조각들을 그룹화한 시퀀스 생성 (작업 편의성 향상)"""
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for piece in pieces:
+            groups[piece['original']].append(piece)
+
+        # 각 그룹을 면적 기준으로 정렬 (큰 그룹 우선)
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda item: item[1][0]['area'],
+            reverse=True
+        )
+
+        result = []
+        for _, group_pieces in sorted_groups:
+            result.extend(group_pieces)
+
+        return result
+
+
+class BeamSearchPacker(PackingStrategy):
+    """전략 3: Beam Search - 상위 k개 배치 후보 유지"""
+
+    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True, beam_width=3):
+        super().__init__(plate_width, plate_height, kerf, allow_rotation)
+        self.beam_width = beam_width
+
+    def pack(self, pieces):
+        all_pieces = self.expand_pieces(pieces)
+        all_pieces.sort(key=lambda p: p['area'], reverse=True)
+
+        print(f"\nBeam Search: beam width={self.beam_width}")
+
+        # 초기 빔: 빈 판 1개
+        beams = [{
+            'plates': [{
+                'pieces': [],
+                'cuts': [],
+                'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+            }],
+            'plates_count': 1,
+            'score': 0
+        }]
+
+        # 각 조각마다
+        for piece_idx, piece in enumerate(all_pieces):
+            next_beams = []
+
+            # 각 빔에서
+            for beam in beams:
+                # 현재 판에 배치 시도
+                placements = self._find_all_placements(beam, piece)
+
+                for placement in placements:
+                    new_beam = self._apply_placement(beam, piece, placement)
+                    # 그룹화 점수 계산
+                    new_beam['score'] = self._evaluate_beam(new_beam, all_pieces[piece_idx+1:])
+                    next_beams.append(new_beam)
+
+                # 새 판 시작 옵션
+                if 'plates' in beam and beam['plates'] and beam['plates'][-1]['pieces']:  # 현재 판이 비어있지 않으면
+                    new_beam = self._start_new_plate(beam, piece)
+                    new_beam['score'] = self._evaluate_beam(new_beam, all_pieces[piece_idx+1:])
+                    next_beams.append(new_beam)
+
+            # 상위 beam_width개만 유지
+            if next_beams:
+                next_beams.sort(key=lambda b: b['score'])
+                beams = next_beams[:self.beam_width]
+            else:
+                # 빔이 없으면 초기화
+                beams = [{
+                    'plates': [{
+                        'pieces': [],
+                        'cuts': [],
+                        'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+                    }],
+                    'plates_count': 1,
+                    'score': 0
+                }]
+
+        # 최선의 빔 선택
+        if not beams:
+            return []
+
+        best_beam = beams[0]
+
+        # 판 리스트로 변환
+        if 'plates' not in best_beam or not best_beam['plates']:
+            return []
+
+        plates = best_beam['plates']
+
+        # Guillotine 절단선 생성
+        for plate in plates:
+            self.generate_guillotine_cuts(plate)
+
+        return plates
+
+    def _find_all_placements(self, beam, piece):
+        """가능한 모든 배치 후보 찾기"""
+        w, h = piece['width'], piece['height']
+        candidates = []
+
+        # 현재 판이 있으면
+        if 'plates' in beam and beam['plates']:
+            current_plate = beam['plates'][-1]
+        else:
+            return candidates  # 판이 없으면 빈 리스트
+
+        # 기존 좌표 수집
+        existing_x = set([0])
+        existing_y = set([0])
+        for p in current_plate['pieces']:
+            existing_x.add(p['x'])
+            pw = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+            ph = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+            existing_x.add(p['x'] + pw + self.kerf)
+            existing_y.add(p['y'])
+            existing_y.add(p['y'] + ph + self.kerf)
+
+        for space in current_plate['free_spaces']:
+            # 일반 방향
+            if w + self.kerf <= space.width and h + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - w) * (space.height - h)
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': w, 'height': h, 'rotated': False,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+            # 회전 방향
+            if self.allow_rotation and h + self.kerf <= space.width and w + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - h) * (space.height - w)
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': h, 'height': w, 'rotated': True,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+        # 상위 5개만 반환 (너무 많으면 느려짐)
+        candidates.sort(key=lambda c: (-c['alignment_score'], c['waste']))
+        return candidates[:5]
+
+    def _apply_placement(self, beam, piece, placement):
+        """배치 적용하여 새 빔 생성"""
+        import copy
+        new_beam = copy.deepcopy(beam)
+
+        if 'plates' not in new_beam or not new_beam['plates']:
+            new_beam['plates'] = [{
+                'pieces': [],
+                'cuts': [],
+                'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+            }]
+            new_beam['plates_count'] = 1
+
+        current_plate = new_beam['plates'][-1]
+
+        # 조각 배치
+        space_orig = placement['space']
+        x, y = placement['x'], placement['y']
+        w, h = placement['width'], placement['height']
+
+        current_plate['pieces'].append({
+            **piece, 'x': x, 'y': y,
+            'rotated': placement['rotated']
+        })
+
+        # 자유 공간 업데이트 - deepcopy로 인해 같은 객체를 찾아야 함
+        space = None
+        for s in current_plate['free_spaces']:
+            if s.x == space_orig.x and s.y == space_orig.y and s.width == space_orig.width and s.height == space_orig.height:
+                space = s
+                break
+
+        if space:
+            current_plate['free_spaces'].remove(space)
+
+            if space.width > w + self.kerf:
+                current_plate['free_spaces'].append(FreeSpace(
+                    x + w + self.kerf, y,
+                    space.width - w - self.kerf, h + self.kerf
+                ))
+
+            if space.height > h + self.kerf:
+                current_plate['free_spaces'].append(FreeSpace(
+                    x, y + h + self.kerf,
+                    space.width, space.height - h - self.kerf
+                ))
+
+        return new_beam
+
+    def _start_new_plate(self, beam, piece):
+        """새 판 시작"""
+        import copy
+        new_beam = copy.deepcopy(beam)
+
+        if 'plates' not in new_beam:
+            new_beam['plates'] = []
+
+        new_beam['plates'].append({
+            'pieces': [],
+            'cuts': [],
+            'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+        })
+        new_beam['plates_count'] = len(new_beam['plates'])
+
+        # 첫 조각 배치
+        w, h = piece['width'], piece['height']
+        new_plate = new_beam['plates'][-1]
+
+        # 회전 고려하여 최선의 방향 선택
+        if self.allow_rotation and h < w:
+            w, h = h, w
+            rotated = True
+        else:
+            rotated = False
+
+        new_plate['pieces'].append({
+            **piece, 'x': 0, 'y': 0,
+            'rotated': rotated
+        })
+
+        # 자유 공간 업데이트
+        new_plate['free_spaces'] = []
+        if self.plate_width > w + self.kerf:
+            new_plate['free_spaces'].append(FreeSpace(
+                w + self.kerf, 0,
+                self.plate_width - w - self.kerf, h + self.kerf
+            ))
+        if self.plate_height > h + self.kerf:
+            new_plate['free_spaces'].append(FreeSpace(
+                0, h + self.kerf,
+                self.plate_width, self.plate_height - h - self.kerf
+            ))
+
+        return new_beam
+
+    def _evaluate_beam(self, beam, remaining_pieces):
+        """빔 평가 (낮을수록 좋음)"""
+        score = 0
+
+        # 1. 판 개수 (가장 중요)
+        plates_count = beam.get('plates_count', len(beam.get('plates', [])))
+        score += plates_count * 10000
+
+        # 2. 그룹화 점수 (같은 크기가 모여있으면 좋음)
+        if 'plates' in beam and beam['plates']:
+            for plate in beam['plates']:
+                score -= self._calculate_grouping_score(plate['pieces'])
+
+        # 3. 공간 사용률 (높을수록 좋음)
+        if 'plates' in beam and beam['plates']:
+            for plate in beam['plates']:
+                utilization = sum(p['area'] for p in plate['pieces']) / (self.plate_width * self.plate_height)
+                score -= utilization * 100
+
+        return score
+
+    def _calculate_grouping_score(self, pieces):
+        """그룹화 점수 계산"""
+        from collections import defaultdict
+
+        if not pieces:
+            return 0
+
+        # 같은 크기 조각들의 연속성 체크
+        groups = defaultdict(list)
+        for i, piece in enumerate(pieces):
+            groups[piece['original']].append(i)
+
+        score = 0
+        for original, indices in groups.items():
+            if len(indices) <= 1:
+                continue
+            # 연속된 조각들에 보너스
+            for i in range(len(indices) - 1):
+                if indices[i+1] - indices[i] == 1:
+                    score += 10  # 연속 보너스
+
+        return score
+
+
+class LookAheadPacker(PackingStrategy):
+    """전략 4: Look-ahead 휴리스틱 - 그룹화를 방해하는 배치에 페널티"""
+
+    def pack(self, pieces):
+        from collections import defaultdict
+
+        all_pieces = self.expand_pieces(pieces)
+        all_pieces.sort(key=lambda p: p['area'], reverse=True)
+
+        # 크기별 그룹 정보 미리 계산
+        self.size_groups = defaultdict(int)
+        for piece in all_pieces:
+            self.size_groups[piece['original']] += 1
+
+        plates = []
+        current_plate = {
+            'pieces': [],
+            'cuts': [],
+            'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+        }
+
+        for piece_idx, piece in enumerate(all_pieces):
+            # 남은 같은 크기 조각 수 계산
+            remaining_same_size = sum(
+                1 for p in all_pieces[piece_idx+1:]
+                if p['original'] == piece['original']
+            )
+
+            placement = self._find_best_placement_lookahead(
+                current_plate, piece, remaining_same_size
+            )
+
+            if placement:
+                self._place_piece(current_plate, piece, placement)
+            else:
+                plates.append(current_plate)
+                current_plate = {
+                    'pieces': [],
+                    'cuts': [],
+                    'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+                }
+                placement = self._find_best_placement_lookahead(
+                    current_plate, piece, remaining_same_size
+                )
+                if placement:
+                    self._place_piece(current_plate, piece, placement)
+
+        if current_plate['pieces']:
+            plates.append(current_plate)
+
+        for plate in plates:
+            self.generate_guillotine_cuts(plate)
+
+        return plates
+
+    def _find_best_placement_lookahead(self, plate, piece, remaining_same_size):
+        """Look-ahead를 고려한 최적 배치 찾기"""
+        w, h = piece['width'], piece['height']
+
+        existing_x = set([0])
+        existing_y = set([0])
+        for p in plate['pieces']:
+            existing_x.add(p['x'])
+            pw = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+            ph = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+            existing_x.add(p['x'] + pw + self.kerf)
+            existing_y.add(p['y'])
+            existing_y.add(p['y'] + ph + self.kerf)
+
+        candidates = []
+
+        for space in plate['free_spaces']:
+            if w + self.kerf <= space.width and h + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - w) * (space.height - h)
+
+                # Look-ahead 페널티 계산
+                lookahead_penalty = self._calculate_lookahead_penalty(
+                    plate, space, w, h, False, piece['original'], remaining_same_size
+                )
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': w, 'height': h, 'rotated': False,
+                    'alignment_score': alignment_score, 'waste': waste,
+                    'lookahead_penalty': lookahead_penalty
+                })
+
+            if self.allow_rotation and h + self.kerf <= space.width and w + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - h) * (space.height - w)
+
+                # Look-ahead 페널티 계산
+                lookahead_penalty = self._calculate_lookahead_penalty(
+                    plate, space, h, w, True, piece['original'], remaining_same_size
+                )
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': h, 'height': w, 'rotated': True,
+                    'alignment_score': alignment_score, 'waste': waste,
+                    'lookahead_penalty': lookahead_penalty
+                })
+
+        if not candidates:
+            return None
+
+        # 정렬: lookahead_penalty 낮은 순, alignment_score 높은 순, waste 낮은 순
+        candidates.sort(key=lambda c: (c['lookahead_penalty'], -c['alignment_score'], c['waste']))
+        return candidates[0]
+
+    def _calculate_lookahead_penalty(self, plate, space, w, h, rotated, original_size, remaining_same_size):
+        """그룹화를 방해하는 정도 계산"""
+        penalty = 0
+
+        # 같은 크기 조각이 더 있으면
+        if remaining_same_size > 0:
+            # 현재 판에 이미 같은 크기가 있는지 확인
+            same_size_in_plate = sum(
+                1 for p in plate['pieces']
+                if p['original'] == original_size
+            )
+
+            # 같은 크기가 이미 있으면 연속 배치 선호 → 페널티 감소
+            if same_size_in_plate > 0:
+                penalty -= 50
+
+            # 남은 공간이 같은 크기 조각을 더 받기 어려우면 페널티
+            remaining_space = space.width * space.height - w * h
+            piece_area = w * h
+
+            if remaining_space < piece_area * remaining_same_size:
+                penalty += 30  # 그룹화 어려움
+
+        return penalty
+
+    def _place_piece(self, plate, piece, placement):
+        space = placement['space']
+        x, y = placement['x'], placement['y']
+        w, h = placement['width'], placement['height']
+
+        plate['pieces'].append({
+            **piece, 'x': x, 'y': y,
+            'rotated': placement['rotated']
+        })
+
+        plate['free_spaces'].remove(space)
+
+        if space.width > w + self.kerf:
+            plate['free_spaces'].append(FreeSpace(
+                x + w + self.kerf, y,
+                space.width - w - self.kerf, h + self.kerf
+            ))
+
+        if space.height > h + self.kerf:
+            plate['free_spaces'].append(FreeSpace(
+                x, y + h + self.kerf,
+                space.width, space.height - h - self.kerf
+            ))
+
+
+class ImprovedGeneticPacker(PackingStrategy):
+    """전략 5: 개선된 유전 알고리즘 - 그룹 보존 연산자 + Beam Search 초기화"""
+
+    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True):
+        super().__init__(plate_width, plate_height, kerf, allow_rotation)
+
+    def pack(self, pieces):
+        all_pieces = self.expand_pieces(pieces)
+
+        population_size = 30  # 증가
+        generations = 100  # 증가
+
+        print(f"\n개선된 유전 알고리즘: 세대 {generations}개, 개체 {population_size}개")
+
+        # 초기 population: 다양한 전략으로 생성
+        population = []
+
+        # 1. 그룹화된 시퀀스 (작업 편의성)
+        grouped_sequence = self._create_grouped_sequence(all_pieces)
+        population.append(grouped_sequence)
+
+        # 2. 면적 기준 정렬
+        area_sorted = sorted(all_pieces, key=lambda p: p['area'], reverse=True)
+        population.append(area_sorted)
+
+        # 3. 최소 차원 기준 정렬
+        min_dim_sorted = sorted(
+            all_pieces,
+            key=lambda p: min(p['width'], p['height']),
+            reverse=True
+        )
+        population.append(min_dim_sorted)
+
+        # 4. 나머지는 랜덤
+        for _ in range(population_size - 3):
+            individual = list(all_pieces)
+            random.shuffle(individual)
+            population.append(individual)
+
+        best_solution = None
+        best_score = float('inf')
+
+        for gen in range(generations):
+            # 평가
+            scored_population = []
+            for individual in population:
+                plates = self._pack_sequence(individual)
+                score = self._fitness(plates)
+                scored_population.append((score, individual, plates))
+
+            scored_population.sort(key=lambda x: x[0])
+
+            if scored_population[0][0] < best_score:
+                best_score = scored_population[0][0]
+                best_solution = scored_population[0][2]
+
+            if gen % 10 == 0:
+                print(f"  세대 {gen}: 최선 점수 = {best_score:.1f}")
+
+            # 선택 (상위 50%)
+            population = [ind for _, ind, _ in scored_population[:population_size // 2]]
+
+            # 교배
+            while len(population) < population_size:
+                parent1, parent2 = random.sample(population[:len(population)//2], 2)
+                child = self._crossover_preserve_groups(parent1, parent2)
+                population.append(child)
+
+            # 변이 (상위 10%는 보존)
+            for i in range(population_size // 10, population_size):
+                if random.random() < 0.3:
+                    self._mutate_preserve_groups(population[i])
+
+        print(f"  최종 점수: {best_score:.1f}")
+
+        # Guillotine 절단선 생성
+        for plate in best_solution:
+            self.generate_guillotine_cuts(plate)
+
+        return best_solution
+
+    def _fitness(self, plates):
+        """적합도 함수 (낮을수록 좋음)"""
+        score = 0
+
+        # 1. 판 개수 (가장 중요)
+        score += len(plates) * 100000
+
+        # 2. 절단 횟수
+        total_cuts = sum(len(plate['cuts']) for plate in plates)
+        score += total_cuts * 100
+
+        # 3. 그룹화 점수 (같은 크기가 연속이면 좋음)
+        for plate in plates:
+            score -= self._calculate_grouping_score(plate['pieces']) * 10
+
+        # 4. 공간 사용률 (높을수록 좋음)
+        for plate in plates:
+            utilization = sum(p['area'] for p in plate['pieces']) / (self.plate_width * self.plate_height)
+            score -= utilization * 1000
+
+        return score
+
+    def _calculate_grouping_score(self, pieces):
+        """그룹화 점수 계산"""
+        from collections import defaultdict
+
+        if not pieces:
+            return 0
+
+        # 같은 크기 조각들의 연속성 체크
+        groups = defaultdict(list)
+        for i, piece in enumerate(pieces):
+            groups[piece['original']].append(i)
+
+        score = 0
+        for original, indices in groups.items():
+            if len(indices) <= 1:
+                continue
+            # 연속된 조각들에 보너스
+            for i in range(len(indices) - 1):
+                if indices[i+1] - indices[i] == 1:
+                    score += 1  # 연속 보너스
+
+        return score
+
+    def _pack_sequence(self, sequence):
+        """시퀀스를 판 배치로 변환"""
+        plates = []
+        current_plate = {
+            'pieces': [],
+            'cuts': [],
+            'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+        }
+
+        for piece in sequence:
+            placement = self._find_placement(current_plate, piece)
+
+            if placement:
+                self._place_piece(current_plate, piece, placement)
+            else:
+                plates.append(current_plate)
+                current_plate = {
+                    'pieces': [],
+                    'cuts': [],
+                    'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]
+                }
+                placement = self._find_placement(current_plate, piece)
+                if placement:
+                    self._place_piece(current_plate, piece, placement)
+
+        if current_plate['pieces']:
+            plates.append(current_plate)
+
+        return plates
+
+    def _find_placement(self, plate, piece):
+        """AlignedFreeSpacePacker와 동일한 정렬 우선 배치"""
+        w, h = piece['width'], piece['height']
+
+        existing_x = set([0])
+        existing_y = set([0])
+        for p in plate['pieces']:
+            existing_x.add(p['x'])
+            pw = p.get('placed_w', p['height'] if p.get('rotated') else p['width'])
+            ph = p.get('placed_h', p['width'] if p.get('rotated') else p['height'])
+            existing_x.add(p['x'] + pw + self.kerf)
+            existing_y.add(p['y'])
+            existing_y.add(p['y'] + ph + self.kerf)
+
+        candidates = []
+
+        for space in plate['free_spaces']:
+            # 일반 방향
+            if w + self.kerf <= space.width and h + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - w) * (space.height - h)
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': w, 'height': h, 'rotated': False,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+            # 회전 방향
+            if self.allow_rotation and h + self.kerf <= space.width and w + self.kerf <= space.height:
+                x_aligned = 1 if space.x in existing_x else 0
+                y_aligned = 1 if space.y in existing_y else 0
+                alignment_score = x_aligned + y_aligned
+                waste = (space.width - h) * (space.height - w)
+
+                candidates.append({
+                    'space': space, 'x': space.x, 'y': space.y,
+                    'width': h, 'height': w, 'rotated': True,
+                    'alignment_score': alignment_score, 'waste': waste
+                })
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda c: (-c['alignment_score'], c['waste']))
+        return candidates[0]
+
+    def _place_piece(self, plate, piece, placement):
+        space = placement['space']
+        x, y = placement['x'], placement['y']
+        w, h = placement['width'], placement['height']
+
+        plate['pieces'].append({
+            **piece, 'x': x, 'y': y,
+            'rotated': placement['rotated']
+        })
+
+        plate['free_spaces'].remove(space)
+
+        if space.width > w + self.kerf:
+            plate['free_spaces'].append(FreeSpace(
+                x + w + self.kerf, y,
+                space.width - w - self.kerf, h + self.kerf
+            ))
+
+        if space.height > h + self.kerf:
+            plate['free_spaces'].append(FreeSpace(
+                x, y + h + self.kerf,
+                space.width, space.height - h - self.kerf
+            ))
+
+    def _crossover_preserve_groups(self, parent1, parent2):
+        """그룹을 보존하는 교배"""
+        from collections import defaultdict
+
+        # 부모1의 그룹 구조 분석
+        groups1 = defaultdict(list)
+        for i, piece in enumerate(parent1):
+            groups1[piece['original']].append((i, piece))
+
+        # 부모2에서 그룹 경계 찾기
+        groups2 = defaultdict(list)
+        for i, piece in enumerate(parent2):
+            groups2[piece['original']].append((i, piece))
+
+        # 교차점을 그룹 경계에서 선택
+        group_keys = list(groups1.keys())
+        if len(group_keys) <= 1:
+            return list(parent1)  # 그룹이 1개 이하면 그대로
+
+        # 랜덤 그룹 경계 선택
+        cross_group_idx = random.randint(0, len(group_keys) - 1)
+        cross_group = group_keys[cross_group_idx]
+
+        # parent1에서 cross_group까지의 조각 수
+        cross_point = sum(len(groups1[k]) for k in group_keys[:cross_group_idx+1])
+
+        # 교배
+        child = []
+        child.extend(parent1[:cross_point])
+
+        # parent2에서 아직 없는 조각들 추가
+        used_ids = set(id(p) for p in child)
+        for piece in parent2:
+            if id(piece) not in used_ids:
+                child.append(piece)
+
+        return child
+
+    def _mutate_preserve_groups(self, individual):
+        """그룹 내에서만 섞는 변이"""
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for i, piece in enumerate(individual):
+            groups[piece['original']].append(i)
+
+        # 랜덤 그룹 선택
+        group_keys = list(groups.keys())
+        if not group_keys:
+            return
+
+        selected_group = random.choice(group_keys)
+        indices = groups[selected_group]
+
+        if len(indices) < 2:
+            return  # 조각이 1개면 섞을 수 없음
+
+        # 그룹 내에서 2개 위치 교환
+        i, j = random.sample(indices, 2)
+        individual[i], individual[j] = individual[j], individual[i]
+
+    def _create_grouped_sequence(self, pieces):
+        """같은 크기 조각들을 그룹화한 시퀀스 생성"""
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for piece in pieces:
+            groups[piece['original']].append(piece)
+
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda item: item[1][0]['area'],
+            reverse=True
+        )
+
+        result = []
+        for _, group_pieces in sorted_groups:
+            result.extend(group_pieces)
+
+        return result
+
 
 # ============= 메인 실행 부분 =============
 
@@ -870,22 +1637,41 @@ def run_optimization():
     print("="*60)
     print("MDF 재단 최적화 - 실제 Guillotine Cut")
     print("="*60)
-    print("1. 정렬 우선 자유 공간")
-    print("2. 하이브리드")
-    print("3. 유전 알고리즘 (추천)")
+
+    # 회전 가능 여부 설정
+    rotation_input = input("조각 회전 허용? (y/n, 기본값 y): ").strip().lower() or "y"
+    allow_rotation = rotation_input in ("y", "yes", "예", "")
+
+    if allow_rotation:
+        print("✓ 회전 허용 (결이 없는 재질)")
+    else:
+        print("✓ 회전 금지 (결이 있는 재질)")
+
+    print("="*60)
+    print("1. 정렬 우선 자유 공간 (그리디)")
+    print("2. 유전 알고리즘")
+    print("3. Beam Search (백트래킹)")
+    print("4. Look-ahead (그룹화 휴리스틱)")
+    print("5. 개선된 유전 알고리즘 (추천)")
     print("="*60)
 
-    strategy_choice = input("전략 선택 (1/2/3, 기본값 3): ").strip() or "3"
+    strategy_choice = input("전략 선택 (1-5, 기본값 5): ").strip() or "5"
 
-    if strategy_choice == "2":
-        packer = HybridPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
-        print("\n하이브리드 전략 선택")
-    elif strategy_choice == "3":
-        packer = GeneticPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
-        print("\n유전 알고리즘 전략 선택")
-    else:
-        packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF)
+    if strategy_choice == "1":
+        packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
         print("\n정렬 우선 자유 공간 전략 선택")
+    elif strategy_choice == "2":
+        packer = GeneticPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+        print("\n유전 알고리즘 전략 선택")
+    elif strategy_choice == "3":
+        packer = BeamSearchPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation, beam_width=3)
+        print("\nBeam Search 전략 선택 (beam_width=3)")
+    elif strategy_choice == "4":
+        packer = LookAheadPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+        print("\nLook-ahead 전략 선택")
+    else:  # "5" or default
+        packer = ImprovedGeneticPacker(PLATE_WIDTH, PLATE_HEIGHT, KERF, allow_rotation)
+        print("\n개선된 유전 알고리즘 전략 선택")
 
     plates = packer.pack(pieces)
 
