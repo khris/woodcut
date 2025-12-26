@@ -25,12 +25,39 @@ def main():
         (369, 640, 2),
     ]
 
-    PLATE_WIDTH = 2440
-    PLATE_HEIGHT = 1220
-
     print("="*60)
     print("목재 재단 최적화 - Guillotine Cut")
     print("="*60)
+
+    # 원판 너비 입력
+    width_input = input("원판 너비 (mm, 기본값 2440): ").strip()
+    if width_input == "":
+        plate_width = 2440
+    else:
+        try:
+            plate_width = int(width_input)
+            if plate_width <= 0:
+                print("❌ 오류: 너비는 양수여야 합니다.")
+                return
+        except ValueError:
+            print("❌ 오류: 숫자를 입력해주세요.")
+            return
+
+    # 원판 높이 입력
+    height_input = input("원판 높이 (mm, 기본값 1220): ").strip()
+    if height_input == "":
+        plate_height = 1220
+    else:
+        try:
+            plate_height = int(height_input)
+            if plate_height <= 0:
+                print("❌ 오류: 높이는 양수여야 합니다.")
+                return
+        except ValueError:
+            print("❌ 오류: 숫자를 입력해주세요.")
+            return
+
+    print(f"✓ 원판 크기: {plate_width}×{plate_height}mm")
 
     # 톱날 두께 (kerf) 입력
     kerf_input = input("톱날 두께 (kerf, mm, 기본값 5): ").strip()
@@ -69,23 +96,23 @@ def main():
 
     match strategy_choice:
         case "1":
-            packer = AlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, kerf, allow_rotation)
+            packer = AlignedFreeSpacePacker(plate_width, plate_height, kerf, allow_rotation)
             strategy_name = "aligned_free_space"
             print("\n정렬 우선 자유 공간 전략 선택")
         case "2":
-            packer = GeneticAlignedFreeSpacePacker(PLATE_WIDTH, PLATE_HEIGHT, kerf, allow_rotation)
+            packer = GeneticAlignedFreeSpacePacker(plate_width, plate_height, kerf, allow_rotation)
             strategy_name = "genetic_aligned"
             print("\n유전 알고리즘 + AlignedFreeSpace 전략 선택")
         case "3":
-            packer = BeamSearchPacker(PLATE_WIDTH, PLATE_HEIGHT, kerf, allow_rotation, beam_width=3)
+            packer = BeamSearchPacker(plate_width, plate_height, kerf, allow_rotation, beam_width=3)
             strategy_name = "beam_search"
             print("\nBeam Search 전략 선택 (beam_width=3)")
         case "4":
-            packer = LookAheadPacker(PLATE_WIDTH, PLATE_HEIGHT, kerf, allow_rotation)
+            packer = LookAheadPacker(plate_width, plate_height, kerf, allow_rotation)
             strategy_name = "lookahead"
             print("\nLook-ahead 전략 선택")
         case "5":
-            packer = GeneticGroupPreservingPacker(PLATE_WIDTH, PLATE_HEIGHT, kerf, allow_rotation)
+            packer = GeneticGroupPreservingPacker(plate_width, plate_height, kerf, allow_rotation)
             strategy_name = "genetic_group"
             print("\n그룹 보존 유전 알고리즘 전략 선택")
         case _:
@@ -97,7 +124,7 @@ def main():
     plates = packer.pack(pieces)
 
     # 시각화
-    visualize_solution(plates, pieces, PLATE_WIDTH, PLATE_HEIGHT, strategy_name)
+    visualize_solution(plates, pieces, plate_width, plate_height, strategy_name)
 
 
 if __name__ == "__main__":
