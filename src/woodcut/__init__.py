@@ -16,6 +16,37 @@ from .strategies import (
 from .visualizer import visualize_solution
 
 
+def get_positive_int_input(prompt: str, default: int | None = None) -> int | None:
+    """양수 정수 입력을 받는 헬퍼 함수
+
+    Args:
+        prompt: 사용자에게 보여줄 프롬프트 메시지
+        default: 기본값 (None이면 필수 입력)
+
+    Returns:
+        입력받은 양수 정수, 또는 에러 시 None
+    """
+    user_input = input(prompt).strip()
+
+    # 빈 입력 처리
+    if user_input == "":
+        if default is not None:
+            return default
+        print("❌ 오류: 값을 입력해주세요.")
+        return None
+
+    # 정수 변환 시도
+    try:
+        value = int(user_input)
+        if value <= 0:
+            print("❌ 오류: 양수를 입력해주세요.")
+            return None
+        return value
+    except ValueError:
+        print("❌ 오류: 숫자를 입력해주세요.")
+        return None
+
+
 def main():
     """CLI 엔트리 포인트"""
     pieces = [
@@ -29,49 +60,21 @@ def main():
     print("목재 재단 최적화 - Guillotine Cut")
     print("="*60)
 
-    # 원판 너비 입력
-    width_input = input("원판 너비 (mm, 기본값 2440): ").strip()
-    if width_input == "":
-        plate_width = 2440
-    else:
-        try:
-            plate_width = int(width_input)
-            if plate_width <= 0:
-                print("❌ 오류: 너비는 양수여야 합니다.")
-                return
-        except ValueError:
-            print("❌ 오류: 숫자를 입력해주세요.")
-            return
+    # 원판 크기 입력
+    plate_width = get_positive_int_input("원판 너비 (mm, 기본값 2440): ", default=2440)
+    if plate_width is None:
+        return
 
-    # 원판 높이 입력
-    height_input = input("원판 높이 (mm, 기본값 1220): ").strip()
-    if height_input == "":
-        plate_height = 1220
-    else:
-        try:
-            plate_height = int(height_input)
-            if plate_height <= 0:
-                print("❌ 오류: 높이는 양수여야 합니다.")
-                return
-        except ValueError:
-            print("❌ 오류: 숫자를 입력해주세요.")
-            return
+    plate_height = get_positive_int_input("원판 높이 (mm, 기본값 1220): ", default=1220)
+    if plate_height is None:
+        return
 
     print(f"✓ 원판 크기: {plate_width}×{plate_height}mm")
 
-    # 톱날 두께 (kerf) 입력
-    kerf_input = input("톱날 두께 (kerf, mm, 기본값 5): ").strip()
-    if kerf_input == "":
-        kerf = 5
-    else:
-        try:
-            kerf = int(kerf_input)
-            if kerf <= 0:
-                print("❌ 오류: 톱날 두께는 양수여야 합니다.")
-                return
-        except ValueError:
-            print("❌ 오류: 숫자를 입력해주세요.")
-            return
+    # 톱날 두께 입력
+    kerf = get_positive_int_input("톱날 두께 (kerf, mm, 기본값 5): ", default=5)
+    if kerf is None:
+        return
     print(f"✓ 톱날 두께: {kerf}mm")
 
     # 회전 허용 여부
