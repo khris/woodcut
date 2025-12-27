@@ -504,8 +504,7 @@ class RegionBasedPacker(PackingStrategy):
                     'x': current_x,
                     'y': region_y + y_offset,
                     'rotated': rotated,
-                    'placed_w': piece_w,
-                    'placed_h': piece_h,
+                    # placed_w/h는 절단 알고리즘이 설정 (미리 설정하면 트리밍 절단 생성 안 됨)
                     'id': len(placed),
                     'original': (w, h)
                 })

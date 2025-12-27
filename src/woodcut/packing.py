@@ -138,8 +138,6 @@ class PackingStrategy(ABC):
                 # print(f"  DEBUG: piece at y={p['y']}, size={p['width']}×{p['height']}, rotated={p.get('rotated')}, req_h={p_req_h}, placed_h={p.get('placed_h', 'None')}")
 
             cut_y = y_start + max_req_h
-            # 디버그: 계산된 절단 위치
-            # print(f"DEBUG TRIM: y_group at {y_start}, max_req_h={max_req_h}, cut_y={cut_y}, region=({region.x},{region.y} {region.width}×{region.height})")
 
             if region.y < cut_y < region.y + region.height:
                 # 이 절단으로 영향받는 조각들 (같은 y에서 시작하는 모든 조각)
