@@ -4,6 +4,7 @@ from .genetic_aligned_free_space import GeneticAlignedFreeSpacePacker
 from .beam_search import BeamSearchPacker
 from .lookahead import LookAheadPacker
 from .genetic_group_preserving import GeneticGroupPreservingPacker
+from .region_based import RegionBasedPacker
 
 __all__ = [
     'AlignedFreeSpacePacker',
@@ -11,4 +12,5 @@ __all__ = [
     'BeamSearchPacker',
     'LookAheadPacker',
     'GeneticGroupPreservingPacker',
+    'RegionBasedPacker',
 ]

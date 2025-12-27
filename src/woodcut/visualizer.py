@@ -1,5 +1,7 @@
 """시각화 모듈"""
 
+import matplotlib
+matplotlib.use('Agg')  # 비대화형 백엔드
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.patches import Rectangle as MPLRect
@@ -187,7 +189,14 @@ def visualize_solution(plates, pieces, plate_width, plate_height, strategy_name=
 
     plt.savefig(filepath, dpi=150, bbox_inches='tight')
     print(f"\n시각화 파일 저장: {filepath}")
-    plt.show()
+
+    # 저장된 이미지 자동 열기 (macOS)
+    import subprocess
+    try:
+        subprocess.run(['open', str(filepath)], check=True)
+    except Exception as e:
+        print(f"이미지 자동 열기 실패: {e}")
+        print(f"수동으로 열어주세요: {filepath}")
 
 
 # 폰트 설정 초기화
