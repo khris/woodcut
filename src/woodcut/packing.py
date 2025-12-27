@@ -5,6 +5,7 @@
 - PackingStrategy: 패킹 전략 베이스 클래스 (Guillotine Cut 알고리즘 포함)
 """
 
+from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
@@ -32,19 +33,27 @@ class FreeSpace:
 class PackingStrategy(ABC):
     """패킹 전략 베이스 클래스"""
 
-    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True):
-        self.plate_width = plate_width
-        self.plate_height = plate_height
-        self.kerf = kerf
-        self.allow_rotation = allow_rotation
+    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
+        self.plate_width: int = plate_width
+        self.plate_height: int = plate_height
+        self.kerf: int = kerf
+        self.allow_rotation: bool = allow_rotation
 
     @abstractmethod
-    def pack(self, pieces):
+    def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
+        """조각들을 판에 배치
+
+        Args:
+            pieces: [(width, height, count), ...] 형식의 조각 목록
+
+        Returns:
+            판별 배치 결과 리스트, 각 판은 {'pieces': [...], 'cuts': [...]} 구조
+        """
         pass
 
-    def expand_pieces(self, pieces):
+    def expand_pieces(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
         """조각을 개별 아이템으로 확장"""
-        all_pieces = []
+        all_pieces: list[dict] = []
         piece_id = 0
         for width, height, count in pieces:
             for i in range(count):

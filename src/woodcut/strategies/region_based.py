@@ -7,6 +7,7 @@
 - 작업 편의성: 같은 높이/너비 조각들이 그룹화
 """
 
+from __future__ import annotations
 from ..packing import PackingStrategy, FreeSpace
 
 
@@ -20,11 +21,11 @@ class RegionBasedPacker(PackingStrategy):
     - 작업 편의성: 같은 높이/너비 조각들이 그룹화
     """
 
-    def __init__(self, plate_width, plate_height, kerf=5, allow_rotation=True):
+    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
         super().__init__(plate_width, plate_height, kerf, allow_rotation)
-        self.tolerance = 100  # 클러스터링 허용 오차 (mm) - 다중 그룹 배치용
+        self.tolerance: int = 100  # 클러스터링 허용 오차 (mm) - 다중 그룹 배치용
 
-    def pack(self, pieces):
+    def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
         """다중 그룹 영역 배치 패킹 (재설계)"""
         all_pieces = self.expand_pieces(pieces)
         plates = []
