@@ -187,7 +187,7 @@ class RegionBasedPacker(PackingStrategy):
             print(f"\n⚠️  백트래킹 부분 성공: {best_score}/{len(all_pieces)}개 조각 배치")
             return best_plate
         else:
-            print(f"\n⚠️  백트래킹 실패: 모든 조합에서 배치 실패")
+            print("\n⚠️  백트래킹 실패: 모든 조합에서 배치 실패")
             return None
 
     def _cluster_groups_by_dimension_fixed(self, groups_with_rotation, dimension_type):
@@ -524,7 +524,7 @@ class RegionBasedPacker(PackingStrategy):
             print(f"  그룹 {w}×{h} (회전={rotated}): {count}개 → y_offset={y_offset}")
 
             # 그룹의 모든 조각 배치 (수평 방향)
-            for i in range(count):
+            for _ in range(count):
                 # 공간 체크
                 if current_x + piece_w > region['x'] + region['width']:
                     print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
@@ -722,7 +722,6 @@ class RegionBasedPacker(PackingStrategy):
 
     def _allocate_horizontal_first(self, height_clusters, width_clusters):
         """수평 영역 우선 전략: 수평 먼저 (상하 쌓기) → 수직 나중 (좌우 나누기)"""
-        regions = []
         used_groups = set()
 
         all_clusters = []
@@ -802,7 +801,6 @@ class RegionBasedPacker(PackingStrategy):
 
     def _allocate_vertical_first(self, height_clusters, width_clusters):
         """수직 영역 우선 전략: 수직 먼저 (좌우 나누기) → 수평 나중 (상하 쌓기)"""
-        regions = []
         used_groups = set()
 
         all_clusters = []
@@ -1348,7 +1346,7 @@ class RegionBasedPacker(PackingStrategy):
             print(f"    가능한 배치: {cols_per_row}열 × {rows_available}행 = 최대 {cols_per_row * rows_available}개")
 
             if cols_per_row == 0 or rows_available == 0:
-                print(f"    ⚠️  조각이 너무 커서 영역에 배치 불가!")
+                print("    ⚠️  조각이 너무 커서 영역에 배치 불가!")
                 return None
 
             # 그룹 조각들을 격자로 배치
