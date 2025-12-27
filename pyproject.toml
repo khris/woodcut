@@ -5,6 +5,8 @@ description = "MDF 재단 최적화 - Guillotine Cut 알고리즘"
 requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.7.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
 ]
 
 [project.scripts]

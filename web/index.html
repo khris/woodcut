@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>목재 재단기</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>목재 재단기</h1>
+        </header>
+
+        <div class="main-content">
+            <!-- 입력 폼 -->
+            <div class="input-panel">
+                <h2>재단 설정</h2>
+
+                <div class="form-group">
+                    <label for="plateWidth">원판 너비 (mm)</label>
+                    <input type="number" id="plateWidth" value="2440" min="100">
+                </div>
+
+                <div class="form-group">
+                    <label for="plateHeight">원판 높이 (mm)</label>
+                    <input type="number" id="plateHeight" value="1220" min="100">
+                </div>
+
+                <div class="form-group">
+                    <label for="kerf">톱날 두께 (mm)</label>
+                    <input type="number" id="kerf" value="5" min="0">
+                </div>
+
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="allowRotation" checked>
+                        조각 회전 허용
+                    </label>
+                </div>
+
+                <h3>조각 목록</h3>
+                <div id="piecesList">
+                    <!-- 초기 조각들 -->
+                    <div class="piece-row">
+                        <input type="number" class="piece-width" value="800" min="1" placeholder="너비">
+                        <span>×</span>
+                        <input type="number" class="piece-height" value="310" min="1" placeholder="높이">
+                        <span>×</span>
+                        <input type="number" class="piece-count" value="2" min="1" placeholder="개수">
+                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
+                    </div>
+                    <div class="piece-row">
+                        <input type="number" class="piece-width" value="644" min="1" placeholder="너비">
+                        <span>×</span>
+                        <input type="number" class="piece-height" value="310" min="1" placeholder="높이">
+                        <span>×</span>
+                        <input type="number" class="piece-count" value="3" min="1" placeholder="개수">
+                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
+                    </div>
+                    <div class="piece-row">
+                        <input type="number" class="piece-width" value="371" min="1" placeholder="너비">
+                        <span>×</span>
+                        <input type="number" class="piece-height" value="270" min="1" placeholder="높이">
+                        <span>×</span>
+                        <input type="number" class="piece-count" value="4" min="1" placeholder="개수">
+                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
+                    </div>
+                    <div class="piece-row">
+                        <input type="number" class="piece-width" value="369" min="1" placeholder="너비">
+                        <span>×</span>
+                        <input type="number" class="piece-height" value="640" min="1" placeholder="높이">
+                        <span>×</span>
+                        <input type="number" class="piece-count" value="2" min="1" placeholder="개수">
+                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
+                    </div>
+                </div>
+
+                <button class="btn-add" onclick="addPiece()">+ 조각 추가</button>
+                <button class="btn-calculate" onclick="calculateCutting()">재단 계획 생성</button>
+
+                <div id="status" class="status"></div>
+            </div>
+
+            <!-- 결과 표시 -->
+            <div class="result-panel">
+                <h2>재단 결과</h2>
+                <div id="resultStats" class="result-stats"></div>
+                <div id="visualization" class="visualization"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
