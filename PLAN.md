@@ -140,48 +140,170 @@ def backtrack(selected_sets, used_groups, y_offset):
 - 공간 부족 시 조기 가지치기
 - 모든 그룹 배치 시 즉시 종료
 
-### 4. 2-Phase Cutting 알고리즘
+### 4. 2-Phase Cutting 알고리즘 상세
 
-**Phase 1: Trimming Cuts**
+#### Phase 1: Trimming Cuts (차원 트리밍)
+
+**목적**: 조각들을 필요한 크기로 정확히 자르는 절단선 생성
+
+**알고리즘:**
 ```python
-# y 시작점별 그룹화 → 높이별 sub-group화
+# 1. y 시작점별 그룹화
 y_groups = {}
 for piece in region.pieces:
-    y_groups[piece['y']].append(piece)
+    y_start = piece['y']
+    y_groups[y_start].append(piece)
 
+# 2. 각 y 그룹을 높이별로 sub-group화
 for y_start, pieces_at_y in y_groups.items():
-    # 높이별 sub-group 생성
     height_subgroups = {}
     for p in pieces_at_y:
         req_h = p['width'] if p.get('rotated') else p['height']
         height_subgroups[req_h].append(p)
 
-    # 각 높이별로 독립적인 절단선 생성
+    # 3. 각 높이별로 독립적인 절단선 생성
     for req_h, pieces_with_height in height_subgroups.items():
         cut_y = y_start + req_h
+
         if region.y < cut_y < region.y + region.height:
-            # 절단선 생성
-            trimming_cuts.append({
-                'type': 'horizontal',
-                'position': cut_y,
-                'priority': 1000 + len(pieces_with_height)
-            })
+            # 절단 필요 여부 확인
+            needs_cut = (len(pieces_below) > 0 or
+                        len(pieces_with_height) > 1 or
+                        (len(pieces_with_height) == 1 and req_h < region.height - 1))
+
+            if needs_cut:
+                trimming_cuts.append({
+                    'type': 'horizontal',
+                    'position': cut_y,
+                    'affects': len(pieces_with_height),
+                    'priority': 1000 + len(pieces_with_height)
+                })
 ```
 
-**Phase 2: Separation Cuts**
+**핵심 아이디어:**
+- 같은 y 좌표에서 시작하는 조각들을 **높이별로 독립 처리**
+- 각 높이별로 트리밍 절단선 생성 (중복 방지)
+- 우선순위: `1000 + 영향받는 조각 수` (높을수록 먼저 실행)
+
+#### Phase 2: Separation Cuts (조각 분리)
+
+**목적**: 이미 트림된 조각들을 개별적으로 분리
+
+**알고리즘:**
 ```python
 # 조각의 하단/우측 + kerf 위치에 분리선
 for piece in region.pieces:
     req_h = piece['width'] if piece.get('rotated') else piece['height']
-    cut_y = piece['y'] + req_h + kerf
+    sep_y = piece['y'] + req_h + kerf
 
-    if cut_y < region.y + region.height:
+    if sep_y < region.y + region.height:
+        # 위/아래쪽 조각 수 계산
+        pieces_above = [...]
+        pieces_below = [...]
+
         separation_cuts.append({
             'type': 'horizontal',
-            'position': cut_y,
-            'priority': 1  # 낮은 우선순위
+            'position': sep_y,
+            'affects': min(len(pieces_above), len(pieces_below)),
+            'priority': min(len(pieces_above), len(pieces_below))
         })
 ```
+
+**우선순위 계산:**
+- `min(위쪽 조각 수, 아래쪽 조각 수)`
+- 균형있게 분할하는 절단이 우선
+
+#### 절단 실행 및 재귀
+
+```python
+def _split_region(region, cuts, cut_order):
+    # 1. 모든 조각이 정확한 크기면 종료
+    if _all_pieces_exact(region):
+        if len(region.pieces) <= 1:
+            return
+
+    # 2. Trimming + Separation 절단선 생성
+    trimming_cuts = self._generate_trimming_cuts(region)
+    separation_cuts = self._generate_separation_cuts(region)
+
+    # 3. 우선순위 정렬 (높은 순)
+    all_cuts = sorted(
+        trimming_cuts + separation_cuts,
+        key=lambda c: (c['priority'], -c['position']),
+        reverse=True
+    )
+
+    # 4. 최우선 절단 선택 및 실행
+    best_cut = all_cuts[0]
+    cuts.append(best_cut)
+    cut_order.append(len(cuts))
+
+    # 5. 조각들을 두 영역으로 분류
+    #    - 절단선을 가로지르는 조각: placed_h 업데이트 (트리밍)
+    #    - 완전히 한쪽에 속하는 조각: 해당 영역으로 분류
+
+    # 6. 하위 영역 생성 후 재귀
+    below_region = Region(...)
+    above_region = Region(...)
+
+    self._split_region(below_region, cuts, cut_order)
+    self._split_region(above_region, cuts, cut_order)
+```
+
+**중요 특징:**
+1. **절단선은 현재 영역 경계 내에서만** 생성 (Guillotine 제약)
+2. **트리밍이 분리보다 우선** (priority 1000+ vs 낮은 값)
+3. **조각 1개라도 트리밍 필요하면 절단 생성** (영역 크기 > 조각 크기)
+4. **placed_w/h로 실제 절단 크기 추적** (배치 크기 ≠ 최종 크기)
+
+---
+
+## 알고리즘 동작 예시
+
+### 예시 1: 371×270 조각 2개 (같은 y=689, x만 다름)
+
+**문제 상황:**
+- 두 조각 모두 y=689에서 시작, 높이 270 필요
+- 단순 구현 시: y=310에서 절단하여 두 조각 모두 310 높이로 잘림 ❌
+
+**2-Phase 서브그룹화 해결:**
+1. y=689 그룹을 높이별로 서브그룹화
+2. height_subgroups[270] = [조각1, 조각2]
+3. **y=959 (689+270)에서 수평 절단** (트리밍, priority 1002)
+4. 두 조각 모두 정확히 270 높이로 트림됨 ✅
+5. 이후 수직 절단으로 개별 분리 (분리, priority 낮음)
+
+### 예시 2: 640×369와 800×310이 y=0에서 공존
+
+**문제 상황:**
+- x=0~1285: 640×369 조각 2개 (높이 369 필요)
+- x=1290~: 800×310 조각 1개 (높이 310 필요)
+- 둘 다 y=0에서 시작
+
+**2-Phase 서브그룹화 해결:**
+
+1. **Phase 1: y=0 그룹 처리**
+   - height_subgroups[369] = [640×369 조각들]
+   - height_subgroups[310] = [800×310 조각]
+   - 두 서브그룹 모두 독립적인 절단선 생성
+
+2. **y=369에서 수평 절단** (640×369 조각들 트리밍)
+   - 640×369 조각들이 정확히 369 높이로 트림됨 ✅
+
+3. **x=1285에서 수직 절단** (영역 분리)
+   - 좌측 영역: 640×369 조각들 (완성)
+   - 우측 영역: 800×310 조각 (높이 369로 아직 큼)
+
+4. **우측 영역(1285,0 1155×369)에서 재귀**
+   - 800×310 조각 1개만 존재
+   - height_subgroups[310] = [800×310 조각]
+   - **y=310에서 수평 절단** (트리밍)
+   - 800×310 조각이 정확한 크기로 완성 ✅
+
+**결과:**
+- 모든 조각이 정확한 크기로 절단됨
+- Guillotine 제약 완벽 준수
+- 서브그룹화로 높이가 다른 조각들도 독립 처리
 
 ---
 
@@ -380,6 +502,139 @@ woodcut/
 - Guillotine Cut 제약으로 인해 이론적 최적값보다 낮을 수 있음
 - 회전 허용 시: ~66%
 - 회전 불허 시: ~50%
+
+---
+
+## 사용 방법
+
+### CLI 실행
+
+```bash
+# 기본 실행
+uv run woodcut
+
+# 빌드 후 실행
+uv build
+woodcut
+```
+
+### 입력 파라미터
+
+프로그램 실행 시 대화형으로 입력:
+
+1. **원판 너비** (mm, 기본값 2440)
+2. **원판 높이** (mm, 기본값 1220)
+3. **톱날 두께 (kerf)** (mm, 기본값 5)
+4. **조각 회전 허용 여부** (y/n, 기본값 y)
+
+### 출력 결과
+
+**콘솔 출력:**
+- 배치 결과 요약 (판 수, 조각 수, 사용률)
+- 절단 순서 (번호, 방향, 위치)
+- 조각 크기 검증 결과 (정확도 확인)
+
+**PNG 파일:**
+- 파일명: `cutting_plan_region_based_<timestamp>.png`
+- 위치: `output/` 디렉토리
+- 내용: 배치도, 절단선, 조각 색상 구분
+
+---
+
+## 디버깅 가이드
+
+### 절단선 문제
+
+**증상:** 절단선이 조각을 잘못 자르거나 Guillotine 제약 위반
+
+**확인 사항:**
+1. 배치 결과 확인 (조각들이 Guillotine 가능한 패턴인가?)
+2. `_generate_trimming_cuts` 로직 확인 (서브그룹화 제대로 동작하는가?)
+3. `_split_region` 로직 확인 (우선순위 정렬, placed_w/h 업데이트)
+4. 영역 경계 출력으로 재귀 추적
+
+**DEBUG 코드 추가 예시:**
+```python
+# packing.py의 _generate_trimming_cuts() 메서드
+print(f"[TRIM-H] y={y_start}, req_h={req_h}, cut_y={cut_y}, " +
+      f"region=({region.y}, {region.y + region.height}), " +
+      f"pieces={len(pieces_with_height)}")
+```
+
+### 조각 크기 부정확
+
+**증상:** 일부 조각이 필요한 크기와 다르게 절단됨
+
+**확인 사항:**
+1. `placed_w/h` 업데이트 확인 (트리밍 절단 시 설정되는가?)
+2. 후처리 단계 확인 (미설정 조각 처리)
+3. `_all_pieces_exact` 검증 로직 확인
+
+**DEBUG 코드 추가 예시:**
+```python
+# packing.py의 _split_region() 메서드
+for piece in pieces_crossing:
+    print(f"[TRIM] Piece at ({piece['x']},{piece['y']}) " +
+          f"trimmed to placed_h={piece.get('placed_h', 'UNSET')}")
+```
+
+### 배치 실패
+
+**증상:** 일부 조각이 배치되지 않음
+
+**확인 사항:**
+1. tolerance 값 확인 (너무 작으면 호환 세트 생성 안 됨)
+2. 백트래킹 로그 확인 (어느 단계에서 실패하는가?)
+3. 다중 판 지원 확인 (remaining_pieces 추적)
+
+**해결 방법:**
+- tolerance 값 증가 (기본 100mm → 150mm)
+- 단일 그룹 세트 폴백 확인
+- 판 수 제한 확인 (현재 최대 10장)
+
+### 성능 문제
+
+**증상:** 실행 시간이 너무 오래 걸림
+
+**확인 사항:**
+1. 조각 개수 확인 (50개 이상이면 느릴 수 있음)
+2. 백트래킹 깊이 확인
+3. 호환 세트 개수 확인 (너무 많으면 탐색 시간 증가)
+
+**해결 방법:**
+- 조각 개수 줄이기 (그룹화로 이미 최적화됨)
+- tolerance 값 조정으로 세트 개수 조절
+- 백트래킹 최대 깊이 제한 추가 (향후)
+
+---
+
+## 기술 스택
+
+### 언어 및 런타임
+- **Python 3.10+** (match-case 문법 사용)
+- 최신 문법 적극 활용 (타입 힌트, match-case, walrus 연산자 등)
+
+### 의존성
+- **matplotlib**: 배치도 시각화
+- **uv**: 패키지 관리 및 빌드 도구
+
+### 코딩 스타일
+```python
+# 타입 힌트 사용 (PEP 484, 585, 604)
+def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
+    ...
+
+# match-case 사용 (Python 3.10+)
+match cut['type']:
+    case 'horizontal':
+        ...
+    case 'vertical':
+        ...
+
+# walrus 연산자 사용
+if (req_h := piece.get('height')) > max_height:
+    ...
+```
 
 ---
 
