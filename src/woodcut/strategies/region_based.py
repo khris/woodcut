@@ -27,52 +27,83 @@ class RegionBasedPacker(PackingStrategy):
     def pack(self, pieces):
         """다중 그룹 영역 배치 패킹 (재설계)"""
         all_pieces = self.expand_pieces(pieces)
+        plates = []
+        remaining_pieces = all_pieces[:]
 
-        print("\n=== 다중 그룹 영역 배치 시작 ===")
+        plate_num = 1
 
-        # 1. 레벨 1: 정확히 같은 크기끼리 그룹화
-        groups = self._group_by_exact_size(all_pieces)
+        while remaining_pieces:
+            print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 시작 ===")
+            print(f"남은 조각: {len(remaining_pieces)}개")
 
-        print(f"\n레벨 1: {len(groups)}개 그룹 생성")
-        for i, group in enumerate(groups):
-            print(f"  그룹 {i+1}: {group['size'][0]}×{group['size'][1]}mm, {group['count']}개 조각, 총 면적 {group['total_area']:,}mm²")
+            # 1. 레벨 1: 정확히 같은 크기끼리 그룹화
+            groups = self._group_by_exact_size(remaining_pieces)
 
-        # 2. 각 그룹의 회전 옵션 생성
-        group_options = self._generate_group_options(groups)
+            print(f"\n레벨 1: {len(groups)}개 그룹 생성")
+            for i, group in enumerate(groups):
+                print(f"  그룹 {i+1}: {group['size'][0]}×{group['size'][1]}mm, {group['count']}개 조각, 총 면적 {group['total_area']:,}mm²")
 
-        # 3. 호환 가능한 그룹 세트 생성 (높이/너비 비슷한 것들)
-        group_sets = self._generate_compatible_group_sets(group_options)
-        print(f"\n호환 그룹 세트: {len(group_sets)}개 생성")
+            # 2. 각 그룹의 회전 옵션 생성
+            group_options = self._generate_group_options(groups)
 
-        # 4. 백트래킹으로 최적 조합 찾기
-        regions = self._allocate_multi_group_backtrack(group_sets)
+            # 3. 호환 가능한 그룹 세트 생성 (높이/너비 비슷한 것들)
+            group_sets = self._generate_compatible_group_sets(group_options)
+            print(f"\n호환 그룹 세트: {len(group_sets)}개 생성")
 
-        if not regions:
-            print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
-            plate = {'pieces': [], 'cuts': [], 'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]}
-            for piece in all_pieces:
-                placement = self._find_best_placement_simple(plate['free_spaces'], plate['pieces'], piece)
-                if placement:
-                    self._apply_placement(plate['free_spaces'], plate['pieces'], piece, placement)
+            # 4. 백트래킹으로 최적 조합 찾기
+            regions = self._allocate_multi_group_backtrack(group_sets)
+
+            if not regions:
+                print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
+                plate = {'pieces': [], 'cuts': [], 'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]}
+                for piece in remaining_pieces:
+                    placement = self._find_best_placement_simple(plate['free_spaces'], plate['pieces'], piece)
+                    if placement:
+                        self._apply_placement(plate['free_spaces'], plate['pieces'], piece, placement)
+                self.generate_guillotine_cuts(plate)
+                plates.append(plate)
+                break
+
+            # 5. 각 영역 내 배치
+            plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
+
+            for region in regions:
+                placed = self._pack_multi_group_region(region)
+                if placed:
+                    plate['pieces'].extend(placed)
+
+            # 6. Guillotine 절단선 생성
             self.generate_guillotine_cuts(plate)
-            return [plate]
 
-        # 5. 각 영역 내 배치
-        plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
+            print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 완료 ===")
+            print(f"  배치된 조각: {len(plate['pieces'])}개")
+            print(f"  절단선: {len(plate['cuts'])}개\n")
 
-        for region in regions:
-            placed = self._pack_multi_group_region(region)
-            if placed:
-                plate['pieces'].extend(placed)
+            plates.append(plate)
 
-        # 6. Guillotine 절단선 생성
-        self.generate_guillotine_cuts(plate)
+            # 7. 배치된 조각들을 remaining_pieces에서 제거
+            placed_sizes = {}
+            for p in plate['pieces']:
+                size_key = (p['width'], p['height'])
+                placed_sizes[size_key] = placed_sizes.get(size_key, 0) + 1
 
-        print(f"\n=== 다중 그룹 영역 배치 완료 ===")
-        print(f"  총 조각: {len(plate['pieces'])}개")
-        print(f"  절단선: {len(plate['cuts'])}개\n")
+            new_remaining = []
+            for piece in remaining_pieces:
+                size_key = (piece['width'], piece['height'])
+                if size_key in placed_sizes and placed_sizes[size_key] > 0:
+                    placed_sizes[size_key] -= 1
+                else:
+                    new_remaining.append(piece)
 
-        return [plate]
+            remaining_pieces = new_remaining
+            plate_num += 1
+
+            # 무한 루프 방지
+            if plate_num > 10:
+                print("\n⚠️  최대 원판 수 초과 (10장)")
+                break
+
+        return plates
 
     def _try_all_rotation_combinations(self, groups, all_pieces):
         """백트래킹: 모든 회전 조합 + 영역 할당 전략 시도

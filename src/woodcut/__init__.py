@@ -6,14 +6,7 @@
 - 분할된 영역 내에서만 절단
 """
 
-from .strategies import (
-    AlignedFreeSpacePacker,
-    GeneticAlignedFreeSpacePacker,
-    BeamSearchPacker,
-    LookAheadPacker,
-    GeneticGroupPreservingPacker,
-    RegionBasedPacker,
-)
+from .strategies import RegionBasedPacker
 from .visualizer import visualize_solution
 
 
@@ -87,47 +80,10 @@ def main():
     else:
         print("✓ 회전 금지 (결이 있는 재질)")
 
-    # 전략 선택
-    print("="*60)
-    print("1. 정렬 우선 자유 공간 (그리디)")
-    print("2. 유전 알고리즘 + AlignedFreeSpace")
-    print("3. Beam Search (백트래킹)")
-    print("4. Look-ahead (그룹화 휴리스틱)")
-    print("5. 그룹 보존 유전 알고리즘")
-    print("6. 영역 기반 패킹 (추천) ★ NEW")
-    print("="*60)
-
-    strategy_choice = input("전략 선택 (1-6, 기본값 6): ").strip() or "6"
-
-    match strategy_choice:
-        case "1":
-            packer = AlignedFreeSpacePacker(plate_width, plate_height, kerf, allow_rotation)
-            strategy_name = "aligned_free_space"
-            print("\n정렬 우선 자유 공간 전략 선택")
-        case "2":
-            packer = GeneticAlignedFreeSpacePacker(plate_width, plate_height, kerf, allow_rotation)
-            strategy_name = "genetic_aligned"
-            print("\n유전 알고리즘 + AlignedFreeSpace 전략 선택")
-        case "3":
-            packer = BeamSearchPacker(plate_width, plate_height, kerf, allow_rotation, beam_width=3)
-            strategy_name = "beam_search"
-            print("\nBeam Search 전략 선택 (beam_width=3)")
-        case "4":
-            packer = LookAheadPacker(plate_width, plate_height, kerf, allow_rotation)
-            strategy_name = "lookahead"
-            print("\nLook-ahead 전략 선택")
-        case "5":
-            packer = GeneticGroupPreservingPacker(plate_width, plate_height, kerf, allow_rotation)
-            strategy_name = "genetic_group"
-            print("\n그룹 보존 유전 알고리즘 전략 선택")
-        case "6":
-            packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
-            strategy_name = "region_based"
-            print("\n영역 기반 패킹 전략 선택")
-        case _:
-            print(f"\n❌ 오류: 잘못된 선택 '{strategy_choice}'")
-            print("1-6 사이의 숫자를 입력해주세요.")
-            return
+    # 영역 기반 패킹 전략 사용
+    packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+    strategy_name = "region_based"
+    print("\n영역 기반 패킹 전략 사용")
 
     # 패킹 실행
     plates = packer.pack(pieces)

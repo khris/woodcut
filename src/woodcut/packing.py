@@ -119,7 +119,7 @@ class PackingStrategy(ABC):
             y_boundaries.add((piece['y'] + req_h, req_h))
             x_boundaries.add((piece['x'] + req_w, req_w))
 
-        # 수평 절단선: 같은 y 시작점의 조각들 중 최대 높이로 절단
+        # 수평 절단선: 같은 y 시작점의 조각들을 높이별로 sub-group화하여 트리밍
         # 먼저 y 시작점별로 그룹화
         y_groups = {}
         for piece in region.pieces:
@@ -128,47 +128,50 @@ class PackingStrategy(ABC):
                 y_groups[y_start] = []
             y_groups[y_start].append(piece)
 
-        # 각 y 그룹에 대해 최대 필요 높이 찾기
+        # 각 y 그룹을 높이별로 sub-group화
         for y_start, pieces_at_y in y_groups.items():
-            max_req_h = 0
+            # 높이별로 sub-group 생성
+            height_subgroups = {}
             for p in pieces_at_y:
                 p_req_h = p['width'] if p.get('rotated', False) else p['height']
-                max_req_h = max(max_req_h, p_req_h)
-                # 디버그: 조각 정보 출력
-                # print(f"  DEBUG: piece at y={p['y']}, size={p['width']}×{p['height']}, rotated={p.get('rotated')}, req_h={p_req_h}, placed_h={p.get('placed_h', 'None')}")
+                if p_req_h not in height_subgroups:
+                    height_subgroups[p_req_h] = []
+                height_subgroups[p_req_h].append(p)
 
-            cut_y = y_start + max_req_h
+            # 각 높이별 sub-group에 대해 독립적으로 절단선 생성
+            for req_h, pieces_with_height in height_subgroups.items():
+                cut_y = y_start + req_h
 
-            if region.y < cut_y < region.y + region.height:
-                # 이 절단으로 영향받는 조각들 (같은 y에서 시작하는 모든 조각)
-                affected_pieces = pieces_at_y
+                if region.y < cut_y < region.y + region.height:
+                    # 이 절단으로 영향받는 조각들 (같은 높이를 가진 조각들만)
+                    affected_pieces = pieces_with_height
 
-                # 아래쪽에 다른 조각이 있는지 확인
-                pieces_below = []
-                for p in region.pieces:
-                    if p not in pieces_at_y:  # 다른 y 시작점
-                        p_req_h = p['width'] if p.get('rotated', False) else p['height']
-                        actual_h = p.get('placed_h', p_req_h)
-                        if p['y'] + actual_h <= cut_y:
-                            pieces_below.append(p)
+                    # 아래쪽에 다른 조각이 있는지 확인
+                    pieces_below = []
+                    for p in region.pieces:
+                        if p not in pieces_with_height:  # 다른 높이 또는 다른 y
+                            p_req_h = p['width'] if p.get('rotated', False) else p['height']
+                            actual_h = p.get('placed_h', p_req_h)
+                            if p['y'] + actual_h <= cut_y:
+                                pieces_below.append(p)
 
-                # 절단이 필요한 경우:
-                # 1) 아래쪽에 다른 조각이 있거나
-                # 2) 여러 조각이 있거나
-                # 3) 조각 1개라도 필요한 높이가 영역 높이보다 작으면 트리밍 필요
-                needs_cut = (len(pieces_below) > 0 or
-                           len(pieces_at_y) > 1 or
-                           (len(pieces_at_y) == 1 and max_req_h < region.height - 1))
+                    # 절단이 필요한 경우:
+                    # 1) 아래쪽에 다른 조각이 있거나
+                    # 2) 여러 조각이 있거나
+                    # 3) 조각 1개라도 필요한 높이가 영역 높이보다 작으면 트리밍 필요
+                    needs_cut = (len(pieces_below) > 0 or
+                               len(pieces_with_height) > 1 or
+                               (len(pieces_with_height) == 1 and req_h < region.height - 1))
 
-                if needs_cut:
-                    trimming_cuts.append({
-                        'type': 'horizontal',
-                        'position': cut_y,
-                        'affects': len(affected_pieces),
-                        'priority': 1000 + len(affected_pieces)
-                    })
+                    if needs_cut:
+                        trimming_cuts.append({
+                            'type': 'horizontal',
+                            'position': cut_y,
+                            'affects': len(affected_pieces),
+                            'priority': 1000 + len(affected_pieces)
+                        })
 
-        # 수직 절단선: 같은 x 시작점의 조각들 중 최대 너비로 절단
+        # 수직 절단선: 같은 x 시작점의 조각들을 너비별로 sub-group화하여 트리밍
         # 먼저 x 시작점별로 그룹화
         x_groups = {}
         for piece in region.pieces:
@@ -177,43 +180,48 @@ class PackingStrategy(ABC):
                 x_groups[x_start] = []
             x_groups[x_start].append(piece)
 
-        # 각 x 그룹에 대해 최대 필요 너비 찾기
+        # 각 x 그룹을 너비별로 sub-group화
         for x_start, pieces_at_x in x_groups.items():
-            max_req_w = 0
+            # 너비별로 sub-group 생성
+            width_subgroups = {}
             for p in pieces_at_x:
                 p_req_w = p['height'] if p.get('rotated', False) else p['width']
-                max_req_w = max(max_req_w, p_req_w)
+                if p_req_w not in width_subgroups:
+                    width_subgroups[p_req_w] = []
+                width_subgroups[p_req_w].append(p)
 
-            cut_x = x_start + max_req_w
+            # 각 너비별 sub-group에 대해 독립적으로 절단선 생성
+            for req_w, pieces_with_width in width_subgroups.items():
+                cut_x = x_start + req_w
 
-            if region.x < cut_x < region.x + region.width:
-                # 이 절단으로 영향받는 조각들 (같은 x에서 시작하는 모든 조각)
-                affected_pieces = pieces_at_x
+                if region.x < cut_x < region.x + region.width:
+                    # 이 절단으로 영향받는 조각들 (같은 너비를 가진 조각들만)
+                    affected_pieces = pieces_with_width
 
-                # 왼쪽에 다른 조각이 있는지 확인
-                pieces_left = []
-                for p in region.pieces:
-                    if p not in pieces_at_x:  # 다른 x 시작점
-                        p_req_w = p['height'] if p.get('rotated', False) else p['width']
-                        actual_w = p.get('placed_w', p_req_w)
-                        if p['x'] + actual_w <= cut_x:
-                            pieces_left.append(p)
+                    # 왼쪽에 다른 조각이 있는지 확인
+                    pieces_left = []
+                    for p in region.pieces:
+                        if p not in pieces_with_width:  # 다른 너비 또는 다른 x
+                            p_req_w = p['height'] if p.get('rotated', False) else p['width']
+                            actual_w = p.get('placed_w', p_req_w)
+                            if p['x'] + actual_w <= cut_x:
+                                pieces_left.append(p)
 
-                # 절단이 필요한 경우:
-                # 1) 왼쪽에 다른 조각이 있거나
-                # 2) 여러 조각이 있거나
-                # 3) 조각 1개라도 필요한 너비가 영역 너비보다 작으면 트리밍 필요
-                needs_cut = (len(pieces_left) > 0 or
-                           len(pieces_at_x) > 1 or
-                           (len(pieces_at_x) == 1 and max_req_w < region.width - 1))
+                    # 절단이 필요한 경우:
+                    # 1) 왼쪽에 다른 조각이 있거나
+                    # 2) 여러 조각이 있거나
+                    # 3) 조각 1개라도 필요한 너비가 영역 너비보다 작으면 트리밍 필요
+                    needs_cut = (len(pieces_left) > 0 or
+                               len(pieces_with_width) > 1 or
+                               (len(pieces_with_width) == 1 and req_w < region.width - 1))
 
-                if needs_cut:
-                    trimming_cuts.append({
-                        'type': 'vertical',
-                        'position': cut_x,
-                        'affects': len(affected_pieces),
-                        'priority': 1000 + len(affected_pieces)
-                    })
+                    if needs_cut:
+                        trimming_cuts.append({
+                            'type': 'vertical',
+                            'position': cut_x,
+                            'affects': len(affected_pieces),
+                            'priority': 1000 + len(affected_pieces)
+                        })
 
         return trimming_cuts
 
