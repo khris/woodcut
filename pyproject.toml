@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-woodcut = "woodcut:main"
+woodcut = "woodcut.cli:main"
 
 [build-system]
 requires = ["uv_build"]

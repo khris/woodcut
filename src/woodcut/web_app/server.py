@@ -1,10 +1,6 @@
 """FastAPI 백엔드 서버 - Woodcut 웹 애플리케이션"""
 
-import sys
 from pathlib import Path
-
-# woodcut 패키지를 import하기 위해 경로 추가
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,9 +8,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from woodcut.strategies import RegionBasedPacker
+from ..strategies import RegionBasedPacker
 
-app = FastAPI(title="Woodcut - MDF 재단 최적화")
+# 정적 파일 디렉토리 경로
+STATIC_DIR = Path(__file__).parent / "static"
+
+app = FastAPI(title="Woodcut - 목재 재단 최적화")
 
 # CORS 설정 (개발 환경용)
 app.add_middleware(
@@ -54,7 +53,7 @@ class CuttingResponse(BaseModel):
 @app.get("/")
 async def read_root():
     """루트 경로 - index.html 반환"""
-    return FileResponse("index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.post("/api/cut", response_model=CuttingResponse)
@@ -93,11 +92,4 @@ async def calculate_cutting(request: CuttingRequest):
 
 
 # 정적 파일 서빙 (HTML, CSS, JS)
-app.mount("/static", StaticFiles(directory="."), name="static")
-
-
-if __name__ == "__main__":
-    import uvicorn
-    print("Starting Woodcut Web Server...")
-    print("Open http://localhost:8000 in your browser")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
