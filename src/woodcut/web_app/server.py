@@ -50,6 +50,19 @@ class CuttingResponse(BaseModel):
     plates: list[dict]
 
 
+# Python 소스 파일 서빙 (Pyodide용) - mount보다 먼저 등록
+@app.get("/static/packing.py")
+async def serve_packing():
+    """packing.py 소스 제공"""
+    return FileResponse(STATIC_DIR / "packing.py", media_type="text/plain")
+
+
+@app.get("/static/region_based.py")
+async def serve_region_based():
+    """region_based.py 소스 제공"""
+    return FileResponse(STATIC_DIR / "region_based.py", media_type="text/plain")
+
+
 @app.get("/")
 async def read_root():
     """루트 경로 - index.html 반환"""

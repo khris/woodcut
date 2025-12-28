@@ -1,3 +1,42 @@
+// Pyodide 초기화
+let pyodide = null;
+let packerReady = false;
+
+// Pyodide 로드 및 초기화
+async function initPyodide() {
+    showStatus('Python 환경 로딩 중...', 'loading');
+
+    try {
+        // Pyodide 로드
+        pyodide = await loadPyodide();
+
+        // 1. 기본 클래스 로드 (packing.py)
+        const packingResponse = await fetch('/static/packing.py');
+        const packingCode = await packingResponse.text();
+        await pyodide.runPythonAsync(packingCode);
+
+        // 2. RegionBasedPacker 로드 (region_based.py)
+        const regionResponse = await fetch('/static/region_based.py');
+        let regionCode = await regionResponse.text();
+
+        // import 문 제거 (이미 로드됨)
+        regionCode = regionCode.replace(/from __future__ import annotations\n/g, '');
+        regionCode = regionCode.replace(/from \.\.packing import[^\n]*\n/g, '');
+
+        await pyodide.runPythonAsync(regionCode);
+
+        packerReady = true;
+        showStatus('준비 완료', 'success');
+
+    } catch (error) {
+        console.error('Pyodide 초기화 실패:', error);
+        showStatus(`초기화 실패: ${error.message}`, 'error');
+    }
+}
+
+// 페이지 로드 시 Pyodide 초기화
+window.addEventListener('DOMContentLoaded', initPyodide);
+
 // 조각 추가
 function addPiece() {
     const piecesList = document.getElementById('piecesList');
@@ -28,6 +67,11 @@ function showStatus(message, type) {
 
 // 재단 계획 생성
 async function calculateCutting() {
+    if (!packerReady) {
+        showStatus('Python 환경이 아직 준비되지 않았습니다', 'error');
+        return;
+    }
+
     showStatus('계산 중...', 'loading');
 
     // 입력 수집
@@ -45,7 +89,7 @@ async function calculateCutting() {
         const count = parseInt(row.querySelector('.piece-count').value);
 
         if (width && height && count) {
-            pieces.push({ width, height, count });
+            pieces.push([width, height, count]);
         }
     }
 
@@ -54,27 +98,32 @@ async function calculateCutting() {
         return;
     }
 
-    // API 호출
     try {
-        const response = await fetch('/api/cut', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                plate_width: plateWidth,
-                plate_height: plateHeight,
-                kerf: kerf,
-                allow_rotation: allowRotation,
-                pieces: pieces
-            })
-        });
+        // Python에서 패킹 실행
+        pyodide.globals.set('pieces_input', pieces);
+        pyodide.globals.set('plate_width', plateWidth);
+        pyodide.globals.set('plate_height', plateHeight);
+        pyodide.globals.set('kerf', kerf);
+        pyodide.globals.set('allow_rotation', allowRotation);
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+        const result = await pyodide.runPythonAsync(`
+packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+plates = packer.pack(pieces_input)
 
-        const data = await response.json();
+# 통계 계산
+total_pieces = sum(p[2] for p in pieces_input)
+placed_pieces = sum(len(plate['pieces']) for plate in plates)
+
+{
+    'success': True,
+    'total_pieces': total_pieces,
+    'placed_pieces': placed_pieces,
+    'plates_used': len(plates),
+    'plates': plates
+}
+        `);
+
+        const data = result.toJs({dict_converter: Object.fromEntries});
 
         // 결과 표시
         displayResult(data, plateWidth, plateHeight, kerf);
