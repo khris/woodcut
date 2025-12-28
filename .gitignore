@@ -33,3 +33,6 @@ uv.lock
 
 # macos
 .DS_Store
+
+# GitHub Pages (GitHub Actions에서 빌드)
+docs/
