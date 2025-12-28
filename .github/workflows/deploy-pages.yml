@@ -26,12 +26,12 @@ jobs:
 
       - name: Build docs directory
         run: |
-          mkdir -p _site
+          mkdir -p _site/static
           cp src/woodcut/web_app/static/index.html _site/
-          cp src/woodcut/web_app/static/style.css _site/
-          cp src/woodcut/web_app/static/app.js _site/
-          cp src/woodcut/packing.py _site/
-          cp src/woodcut/strategies/region_based.py _site/
+          cp src/woodcut/web_app/static/style.css _site/static/
+          cp src/woodcut/web_app/static/app.js _site/static/
+          cp src/woodcut/packing.py _site/static/
+          cp src/woodcut/strategies/region_based.py _site/static/
           touch _site/.nojekyll
 
       - name: Upload artifact

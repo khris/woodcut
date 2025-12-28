@@ -10,8 +10,9 @@ from pydantic import BaseModel
 
 from ..strategies import RegionBasedPacker
 
-# 정적 파일 디렉토리 경로
-STATIC_DIR = Path(__file__).parent / "static"
+# 파일 디렉토리 경로
+CURR_DIR = Path(__file__).parent
+STATIC_DIR = CURR_DIR / "static"
 
 app = FastAPI(title="Woodcut - 목재 재단 최적화")
 
@@ -48,21 +49,6 @@ class CuttingResponse(BaseModel):
     placed_pieces: int
     plates_used: int
     plates: list[dict]
-
-
-# Python 소스 파일 서빙 (Pyodide용) - mount보다 먼저 등록
-@app.get("/packing.py")
-@app.get("/static/packing.py")
-async def serve_packing():
-    """packing.py 소스 제공"""
-    return FileResponse(STATIC_DIR / "packing.py", media_type="text/plain")
-
-
-@app.get("/region_based.py")
-@app.get("/static/region_based.py")
-async def serve_region_based():
-    """region_based.py 소스 제공"""
-    return FileResponse(STATIC_DIR / "region_based.py", media_type="text/plain")
 
 
 @app.get("/")
@@ -107,4 +93,4 @@ async def calculate_cutting(request: CuttingRequest):
 
 
 # 정적 파일 서빙 (HTML, CSS, JS)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR), follow_symlink=True), name="static")
