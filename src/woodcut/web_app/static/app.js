@@ -202,13 +202,12 @@ function createPlateSVG(plate, plateWidth, plateHeight, kerf) {
     // 조각 그리기
     plate.pieces.forEach((piece, index) => {
         const x = padding + piece.x * scale;
-        const y = padding + piece.y * scale;
 
-        const w = piece.width * scale;
-        const h = piece.height * scale;
-
+        // Y축 변환: matplotlib(좌하단 원점) → SVG(좌상단 원점)
         const actualW = (piece.rotated ? piece.height : piece.width) * scale;
         const actualH = (piece.rotated ? piece.width : piece.height) * scale;
+        const pieceHeight = piece.rotated ? piece.width : piece.height;
+        const y = padding + (plateHeight - piece.y - pieceHeight) * scale;
 
         // 조각 사각형
         const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -254,7 +253,8 @@ function createPlateSVG(plate, plateWidth, plateHeight, kerf) {
             const isHorizontal = cut.direction === 'H';
 
             if (isHorizontal) {
-                const y = padding + cut.position * scale;
+                // Y축 변환: matplotlib(좌하단) → SVG(좌상단)
+                const y = padding + (plateHeight - cut.position) * scale;
                 const x1 = padding + (cut.start || 0) * scale;
                 const x2 = padding + (cut.end || plateWidth) * scale;
                 line.setAttribute('x1', x1);
@@ -263,8 +263,9 @@ function createPlateSVG(plate, plateWidth, plateHeight, kerf) {
                 line.setAttribute('y2', y);
             } else {
                 const x = padding + cut.position * scale;
-                const y1 = padding + (cut.start || 0) * scale;
-                const y2 = padding + (cut.end || plateHeight) * scale;
+                // Y축 변환: start/end도 뒤집기
+                const y1 = padding + (plateHeight - (cut.start || 0)) * scale;
+                const y2 = padding + (plateHeight - (cut.end || plateHeight)) * scale;
                 line.setAttribute('x1', x);
                 line.setAttribute('y1', y1);
                 line.setAttribute('x2', x);
@@ -285,11 +286,13 @@ function createPlateSVG(plate, plateWidth, plateHeight, kerf) {
                 const x1 = padding + (cut.start || 0) * scale;
                 const x2 = padding + (cut.end || plateWidth) * scale;
                 labelX = (x1 + x2) / 2;
-                labelY = padding + cut.position * scale - 3;
+                // Y축 변환
+                labelY = padding + (plateHeight - cut.position) * scale - 3;
             } else {
                 // 세로선: x는 선 위치보다 약간 오른쪽, y는 선의 중간
-                const y1 = padding + (cut.start || 0) * scale;
-                const y2 = padding + (cut.end || plateHeight) * scale;
+                // Y축 변환
+                const y1 = padding + (plateHeight - (cut.start || 0)) * scale;
+                const y2 = padding + (plateHeight - (cut.end || plateHeight)) * scale;
                 labelX = padding + cut.position * scale + 3;
                 labelY = (y1 + y2) / 2;
             }
