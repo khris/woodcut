@@ -65,16 +65,36 @@ class RegionBasedPacker(PackingStrategy):
                 plates.append(plate)
                 break
 
-            # 5. 각 영역 내 배치
+            # 5. 각 영역 내 배치 및 절단선 생성
             plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
 
-            for region in regions:
-                placed = self._pack_multi_group_region(region)
+            # 영역 ID 할당
+            for i, region in enumerate(regions):
+                region['id'] = f'R{i+1}'
+
+            # 각 영역 배치 + 절단선 생성
+            all_cuts = []
+            for i, region in enumerate(regions):
+                placed, cuts = self._pack_multi_group_region(
+                    region,
+                    region['id'],
+                    is_first_region=(i == 0)
+                )
                 if placed:
                     plate['pieces'].extend(placed)
+                    all_cuts.extend(cuts)
 
-            # 6. Guillotine 절단선 생성
-            self.generate_guillotine_cuts(plate)
+            # 절단선 우선순위 정렬 및 order, region 정보 부여
+            all_cuts.sort(key=lambda c: (c.get('priority', 100), c.get('position', 0)))
+            for idx, cut in enumerate(all_cuts):
+                cut['order'] = idx + 1
+                # region 정보 추가 (시각화용)
+                if 'region_x' not in cut:
+                    cut['region_x'] = 0
+                    cut['region_y'] = 0
+                    cut['region_w'] = self.plate_width
+                    cut['region_h'] = self.plate_height
+            plate['cuts'] = all_cuts
 
             print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 완료 ===")
             print(f"  배치된 조각: {len(plate['pieces'])}개")
@@ -491,21 +511,36 @@ class RegionBasedPacker(PackingStrategy):
 
         return regions
 
-    def _pack_multi_group_region(self, region):
-        """한 영역에 여러 그룹 배치
+    def _pack_multi_group_region(self, region, region_id, is_first_region):
+        """한 영역에 여러 그룹 배치 + 절단선 생성
 
         Args:
             region: _allocate_multi_group_backtrack()가 생성한 영역 정보
+            region_id: 영역 ID (예: 'R1', 'R2')
+            is_first_region: 첫 번째 영역 여부
 
         Returns:
-            배치된 조각 리스트
+            (placed_pieces, cuts)  # 조각 리스트, 절단선 리스트
         """
         placed = []
+        cuts = []
         current_x = region['x']
         region_y = region['y']
         max_height = region['max_height']
 
         print(f"\n[영역 배치] {region['type']}, y={region_y}, max_height={max_height}")
+
+        # 영역 경계 절단선 (첫 영역 제외)
+        # 우선순위 1: 영역 경계 (길로틴 순서 최우선)
+        if not is_first_region:
+            cuts.append({
+                'direction': 'H',
+                'position': region_y,
+                'start': 0,
+                'end': self.plate_width,
+                'priority': 1,
+                'type': 'region_boundary'
+            })
 
         for group in region['groups']:
             w, h = group['original_size']
@@ -528,7 +563,7 @@ class RegionBasedPacker(PackingStrategy):
                 # 공간 체크
                 if current_x + piece_w > region['x'] + region['width']:
                     print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
-                    return None  # 배치 실패
+                    return None, []  # 배치 실패
 
                 placed.append({
                     'width': w,
@@ -544,7 +579,123 @@ class RegionBasedPacker(PackingStrategy):
                 current_x += piece_w + self.kerf
 
         print(f"  → {len(placed)}개 조각 배치 성공")
-        return placed
+
+        # 절단선 생성
+        if not placed:
+            return placed, cuts
+
+        # 1. 그룹 경계 감지 (required_h 비교)
+        sorted_pieces = sorted(placed, key=lambda p: p['x'])
+
+        # 모든 조각의 required_h 수집
+        all_required_h = []
+        for p in sorted_pieces:
+            req_h = p['width'] if p.get('rotated') else p['height']
+            all_required_h.append(req_h)
+
+        max_required_h = max(all_required_h)
+
+        # 우선순위 2: 영역 상단 자투리 trim
+        if abs(max_required_h - max_height) > 1:
+            cuts.append({
+                'direction': 'H',
+                'position': region_y + max_required_h,
+                'start': region['x'],
+                'end': region['x'] + region['width'],
+                'priority': 2,
+                'type': 'region_trim'
+            })
+            print(f"  → 영역 상단 trim: y={region_y + max_required_h}")
+
+        # 그룹 경계 찾기
+        group_boundary_idx = -1
+        boundary_x = None
+        for i in range(len(sorted_pieces) - 1):
+            curr = sorted_pieces[i]
+            next_piece = sorted_pieces[i + 1]
+
+            # required_h 계산 (회전 고려)
+            curr_h = curr['width'] if curr.get('rotated') else curr['height']
+            next_h = next_piece['width'] if next_piece.get('rotated') else next_piece['height']
+
+            # required_h가 다르면 그룹 경계
+            if abs(curr_h - next_h) > 1:
+                group_boundary_idx = i
+                curr_w = curr['height'] if curr.get('rotated') else curr['width']
+                boundary_x = curr['x'] + curr_w
+
+                # 우선순위 3: 그룹 경계 절단
+                cuts.append({
+                    'direction': 'V',
+                    'position': boundary_x,
+                    'start': region_y,
+                    'end': region_y + max_required_h,
+                    'priority': 3,
+                    'type': 'group_boundary'
+                })
+                print(f"  → 그룹 경계 절단: x={boundary_x} ({curr_h}mm vs {next_h}mm)")
+                break  # 첫 번째 경계만 처리
+
+        # 우선순위 4: 각 그룹별 개별 trim
+        if group_boundary_idx >= 0 and boundary_x is not None:
+            left_pieces = sorted_pieces[:group_boundary_idx+1]
+            left_h = left_pieces[0]['width'] if left_pieces[0].get('rotated') else left_pieces[0]['height']
+
+            if abs(left_h - max_required_h) > 1:
+                cuts.append({
+                    'direction': 'H',
+                    'position': region_y + left_h,
+                    'start': region['x'],
+                    'end': boundary_x,
+                    'priority': 4,
+                    'type': 'group_trim'
+                })
+                print(f"  → 좌측 그룹 trim: y={region_y + left_h}")
+
+        # 우선순위 5: 조각 분리 절단 (그룹 내)
+        for i in range(len(sorted_pieces) - 1):
+            curr = sorted_pieces[i]
+            curr_w = curr['height'] if curr.get('rotated') else curr['width']
+
+            # 그룹 경계는 이미 처리
+            if i == group_boundary_idx:
+                continue
+
+            cuts.append({
+                'direction': 'V',
+                'position': curr['x'] + curr_w,
+                'start': region_y,
+                'end': region_y + max_required_h,
+                'priority': 5,
+                'type': 'piece_separation'
+            })
+
+        # 우선순위 6: 영역 우측 자투리 trim
+        last_piece = sorted_pieces[-1]
+        last_w = last_piece['height'] if last_piece.get('rotated') else last_piece['width']
+        last_x_end = last_piece['x'] + last_w
+        region_x_end = region['x'] + region['width']
+
+        if region_x_end - last_x_end > self.kerf + 10:  # 자투리가 10mm 이상
+            cuts.append({
+                'direction': 'V',
+                'position': last_x_end,
+                'start': region_y,
+                'end': region_y + max_required_h,
+                'priority': 6,
+                'type': 'right_trim'
+            })
+
+        # 4. placed_w/h 설정
+        for piece in placed:
+            if piece.get('rotated', False):
+                piece['placed_w'] = piece['height']
+                piece['placed_h'] = piece['width']
+            else:
+                piece['placed_w'] = piece['width']
+                piece['placed_h'] = piece['height']
+
+        return placed, cuts
 
     def _cluster_groups_by_dimension(self, groups, dimension_type='height'):
         """레벨 2: 비슷한 그룹들끼리 클러스터링
