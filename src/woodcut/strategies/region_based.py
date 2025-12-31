@@ -84,7 +84,9 @@ class RegionBasedPacker(PackingStrategy):
                 )
                 if placed:
                     plate['pieces'].extend(placed)
-                    # 각 절단선에 영역 인덱스 추가
+
+                # 절단선은 조각 유무와 관계없이 추가 (자투리 영역 포함)
+                if cuts:
                     for cut in cuts:
                         cut['region_index'] = i
                     all_cuts.extend(cuts)
@@ -525,6 +527,27 @@ class RegionBasedPacker(PackingStrategy):
             return best_sets, best_count
 
         regions, count = backtrack([], set(), 0)
+
+        # 상단 자투리 영역 추가 (kerf보다 크면 무조건)
+        if regions:
+            last_region = regions[-1]
+            last_region_top = last_region['y'] + last_region['height']
+            remaining_height = self.plate_height - last_region_top
+
+            if remaining_height > self.kerf:
+                # 자투리 영역 추가 (조각 없음)
+                scrap_region = {
+                    'type': 'scrap',
+                    'x': 0,
+                    'y': last_region_top,
+                    'width': self.plate_width,
+                    'height': remaining_height,
+                    'max_height': 0,
+                    'groups': []
+                }
+                regions.append(scrap_region)
+                print(f"[자투리 영역 추가] y={scrap_region['y']}, height={remaining_height}mm")
+
         print(f"[백트래킹 완료] {count}개 조각 배치, {len(regions)}개 영역")
 
         return regions
@@ -549,6 +572,19 @@ class RegionBasedPacker(PackingStrategy):
         max_height = region['max_height']
 
         print(f"\n[영역 배치] {region['type']}, y={region_y}, max_height={max_height}")
+
+        # 자투리 영역은 경계 절단선만 생성하고 종료
+        if region['type'] == 'scrap':
+            if not is_first_region:
+                cuts.append({
+                    'direction': 'H',
+                    'position': region_y,
+                    'start': 0,
+                    'end': self.plate_width,
+                    'priority': 1,
+                    'type': 'scrap_boundary'
+                })
+            return placed, cuts
 
         # 영역 경계 절단선 (첫 영역 제외)
         # 우선순위 1: 영역 경계 (길로틴 순서 최우선)
@@ -697,7 +733,7 @@ class RegionBasedPacker(PackingStrategy):
         last_x_end = last_piece['x'] + last_w
         region_x_end = region['x'] + region['width']
 
-        if region_x_end - last_x_end > self.kerf + 10:  # 자투리가 10mm 이상
+        if region_x_end - last_x_end > self.kerf:  # 자투리가 kerf보다 크면 무조건
             cuts.append({
                 'direction': 'V',
                 'position': last_x_end,
@@ -708,19 +744,7 @@ class RegionBasedPacker(PackingStrategy):
                 'sub_priority': 2  # 우측 trim은 조각 분리 후
             })
 
-        # 우선순위 5: 마지막 영역 상단 자투리 trim (우측 trim 직후, 같은 영역)
-        if is_last_region:
-            region_top = region_y + max_required_h
-            if self.plate_height - region_top > self.kerf + 10:  # 자투리가 10mm 이상
-                cuts.append({
-                    'direction': 'H',
-                    'position': region_top,
-                    'start': 0,
-                    'end': self.plate_width,
-                    'priority': 5,
-                    'type': 'top_trim',
-                    'sub_priority': 3  # 상단 trim은 맨 나중
-                })
+        # 상단 자투리는 별도 scrap 영역으로 처리하므로 여기서는 제거
 
         # 4. placed_w/h 설정
         for piece in placed:
