@@ -78,14 +78,32 @@ class RegionBasedPacker(PackingStrategy):
                 placed, cuts = self._pack_multi_group_region(
                     region,
                     region['id'],
-                    is_first_region=(i == 0)
+                    region_index=i,
+                    is_first_region=(i == 0),
+                    is_last_region=(i == len(regions) - 1)
                 )
                 if placed:
                     plate['pieces'].extend(placed)
+                    # 각 절단선에 영역 인덱스 추가
+                    for cut in cuts:
+                        cut['region_index'] = i
                     all_cuts.extend(cuts)
 
-            # 절단선 우선순위 정렬 및 order, region 정보 부여
-            all_cuts.sort(key=lambda c: (c.get('priority', 100), c.get('position', 0)))
+            # 절단선 우선순위 + 영역 순서 정렬
+            # Priority 1 (영역 경계): position 순 (위→아래)
+            # Priority 2-6 (영역 내부): region_index 순 → sub_priority 순 → position 순
+            def sort_key(cut):
+                priority = cut.get('priority', 100)
+                region_idx = cut.get('region_index', 0)
+                sub_priority = cut.get('sub_priority', 0)
+                position = cut.get('position', 0)
+
+                if priority == 1:  # 영역 경계: position만 고려
+                    return (priority, position, 0, 0)
+                else:  # 영역 내부: region_index → sub_priority → position
+                    return (priority, region_idx, sub_priority, position)
+
+            all_cuts.sort(key=sort_key)
             for idx, cut in enumerate(all_cuts):
                 cut['order'] = idx + 1
                 # region 정보 추가 (시각화용)
@@ -511,13 +529,15 @@ class RegionBasedPacker(PackingStrategy):
 
         return regions
 
-    def _pack_multi_group_region(self, region, region_id, is_first_region):
+    def _pack_multi_group_region(self, region, region_id, region_index, is_first_region, is_last_region=False):
         """한 영역에 여러 그룹 배치 + 절단선 생성
 
         Args:
             region: _allocate_multi_group_backtrack()가 생성한 영역 정보
             region_id: 영역 ID (예: 'R1', 'R2')
+            region_index: 영역 인덱스 (0부터 시작)
             is_first_region: 첫 번째 영역 여부
+            is_last_region: 마지막 영역 여부
 
         Returns:
             (placed_pieces, cuts)  # 조각 리스트, 절단선 리스트
@@ -652,7 +672,7 @@ class RegionBasedPacker(PackingStrategy):
                 })
                 print(f"  → 좌측 그룹 trim: y={region_y + left_h}")
 
-        # 우선순위 5: 조각 분리 절단 (그룹 내)
+        # 우선순위 5: 조각 분리 절단 + 자투리 trim (영역별 묶음)
         for i in range(len(sorted_pieces) - 1):
             curr = sorted_pieces[i]
             curr_w = curr['height'] if curr.get('rotated') else curr['width']
@@ -667,10 +687,11 @@ class RegionBasedPacker(PackingStrategy):
                 'start': region_y,
                 'end': region_y + max_required_h,
                 'priority': 5,
-                'type': 'piece_separation'
+                'type': 'piece_separation',
+                'sub_priority': 1  # 조각 분리 먼저
             })
 
-        # 우선순위 6: 영역 우측 자투리 trim
+        # 우선순위 5: 영역 우측 자투리 trim (조각 분리 직후, 같은 영역)
         last_piece = sorted_pieces[-1]
         last_w = last_piece['height'] if last_piece.get('rotated') else last_piece['width']
         last_x_end = last_piece['x'] + last_w
@@ -682,9 +703,24 @@ class RegionBasedPacker(PackingStrategy):
                 'position': last_x_end,
                 'start': region_y,
                 'end': region_y + max_required_h,
-                'priority': 6,
-                'type': 'right_trim'
+                'priority': 5,
+                'type': 'right_trim',
+                'sub_priority': 2  # 우측 trim은 조각 분리 후
             })
+
+        # 우선순위 5: 마지막 영역 상단 자투리 trim (우측 trim 직후, 같은 영역)
+        if is_last_region:
+            region_top = region_y + max_required_h
+            if self.plate_height - region_top > self.kerf + 10:  # 자투리가 10mm 이상
+                cuts.append({
+                    'direction': 'H',
+                    'position': region_top,
+                    'start': 0,
+                    'end': self.plate_width,
+                    'priority': 5,
+                    'type': 'top_trim',
+                    'sub_priority': 3  # 상단 trim은 맨 나중
+                })
 
         # 4. placed_w/h 설정
         for piece in placed:
