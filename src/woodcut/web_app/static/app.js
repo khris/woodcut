@@ -37,20 +37,67 @@ async function initPyodide() {
 // 페이지 로드 시 Pyodide 초기화
 window.addEventListener('DOMContentLoaded', initPyodide);
 
+// 프리셋 데이터
+const PRESETS = {
+    'basic': [
+        [800, 310, 2],
+        [644, 310, 3],
+        [371, 270, 4],
+        [369, 640, 2]
+    ],
+    'cabinet': [
+        [600, 400, 4], // 측판, 천판, 지판
+        [560, 380, 2], // 선반
+        [595, 395, 2]  // 문짝
+    ],
+    'shelf': [
+        [1800, 300, 2], // 긴 기둥
+        [800, 300, 5],  // 선반판
+        [1800, 800, 1]  // 뒷판
+    ]
+};
+
+// 프리셋 로드
+function loadPreset(presetId) {
+    if (!presetId || !PRESETS[presetId]) return;
+    
+    const piecesList = document.getElementById('piecesList');
+    piecesList.innerHTML = ''; // 기존 목록 초기화
+    
+    PRESETS[presetId].forEach(p => {
+        const newRow = document.createElement('div');
+        newRow.className = 'piece-row';
+        newRow.innerHTML = `
+            <input type="number" class="piece-width" value="${p[0]}" min="1" placeholder="너비">
+            <span>×</span>
+            <input type="number" class="piece-height" value="${p[1]}" min="1" placeholder="높이">
+            <span>×</span>
+            <input type="number" class="piece-count" value="${p[2]}" min="1" placeholder="개수">
+            <button class="btn-remove" onclick="removePiece(this)">✕</button>
+        `;
+        piecesList.appendChild(newRow);
+    });
+    
+    showStatus(`프리셋 '${presetId}' 로드 완료`, 'success');
+}
+
 // 조각 추가
 function addPiece() {
     const piecesList = document.getElementById('piecesList');
     const newRow = document.createElement('div');
     newRow.className = 'piece-row';
     newRow.innerHTML = `
-        <input type="number" class="piece-width" value="100" min="1" placeholder="너비">
+        <input type="number" class="piece-width" min="1" placeholder="너비">
         <span>×</span>
-        <input type="number" class="piece-height" value="100" min="1" placeholder="높이">
+        <input type="number" class="piece-height" min="1" placeholder="높이">
         <span>×</span>
         <input type="number" class="piece-count" value="1" min="1" placeholder="개수">
         <button class="btn-remove" onclick="removePiece(this)">✕</button>
     `;
     piecesList.appendChild(newRow);
+    
+    // 포커스 자동 이동
+    newRow.querySelector('.piece-width').focus();
 }
 
 // 조각 제거

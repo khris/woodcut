@@ -40,41 +40,19 @@
                     </label>
                 </div>
 
+                <div class="form-group">
+                    <label for="presetSelect">프리셋 불러오기</label>
+                    <select id="presetSelect" onchange="loadPreset(this.value)">
+                        <option value="">-- 프리셋 선택 --</option>
+                        <option value="basic">기본 예제 (다양한 크기)</option>
+                        <option value="cabinet">수납장 (일관된 높이)</option>
+                        <option value="shelf">선반 (긴 조각 위주)</option>
+                    </select>
+                </div>
+
                 <h3>조각 목록</h3>
                 <div id="piecesList">
-                    <!-- 초기 조각들 -->
-                    <div class="piece-row">
-                        <input type="number" class="piece-width" value="800" min="1" placeholder="너비">
-                        <span>×</span>
-                        <input type="number" class="piece-height" value="310" min="1" placeholder="높이">
-                        <span>×</span>
-                        <input type="number" class="piece-count" value="2" min="1" placeholder="개수">
-                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
-                    </div>
-                    <div class="piece-row">
-                        <input type="number" class="piece-width" value="644" min="1" placeholder="너비">
-                        <span>×</span>
-                        <input type="number" class="piece-height" value="310" min="1" placeholder="높이">
-                        <span>×</span>
-                        <input type="number" class="piece-count" value="3" min="1" placeholder="개수">
-                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
-                    </div>
-                    <div class="piece-row">
-                        <input type="number" class="piece-width" value="371" min="1" placeholder="너비">
-                        <span>×</span>
-                        <input type="number" class="piece-height" value="270" min="1" placeholder="높이">
-                        <span>×</span>
-                        <input type="number" class="piece-count" value="4" min="1" placeholder="개수">
-                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
-                    </div>
-                    <div class="piece-row">
-                        <input type="number" class="piece-width" value="369" min="1" placeholder="너비">
-                        <span>×</span>
-                        <input type="number" class="piece-height" value="640" min="1" placeholder="높이">
-                        <span>×</span>
-                        <input type="number" class="piece-count" value="2" min="1" placeholder="개수">
-                        <button class="btn-remove" onclick="removePiece(this)">✕</button>
-                    </div>
+                    <!-- 사용자 입력 대기 -->
                 </div>
 
                 <button class="btn-add" onclick="addPiece()">+ 조각 추가</button>

@@ -38,13 +38,6 @@ def get_positive_int_input(prompt: str, default: int | None = None) -> int | Non
 
 def run_interactive():
     """대화형 CLI 실행"""
-    pieces = [
-        (800, 310, 2),
-        (644, 310, 3),
-        (371, 270, 4),
-        (369, 640, 2),
-    ]
-
     print("="*60)
     print("목재 재단 최적화 - Guillotine Cut")
     print("="*60)
@@ -74,6 +67,31 @@ def run_interactive():
         print("✓ 회전 허용 (결이 없는 재질)")
     else:
         print("✓ 회전 금지 (결이 있는 재질)")
+
+    # 조각 입력 받기
+    print("\n[재단할 조각 입력]")
+    print("입력을 마치려면 너비에 '0' 또는 엔터를 입력하세요.")
+    pieces = []
+    while True:
+        idx = len(pieces) + 1
+        w = get_positive_int_input(f"조각 {idx} 너비 (mm): ")
+        if w is None or w == 0:
+            if not pieces:
+                print("❌ 오류: 최소 한 개의 조각은 입력해야 합니다.")
+                continue
+            break
+        
+        h = get_positive_int_input(f"조각 {idx} 높이 (mm): ")
+        if h is None:
+            print("❌ 높이 입력을 취소하고 다시 너비부터 입력합니다.")
+            continue
+            
+        c = get_positive_int_input(f"조각 {idx} 수량 (개, 기본값 1): ", default=1)
+        if c is None:
+            c = 1
+            
+        pieces.append((w, h, c))
+        print(f"  + 조각 추가: {w}x{h}mm, {c}개")
 
     # 영역 기반 패킹 전략 사용
     packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
