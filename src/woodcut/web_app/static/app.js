@@ -11,12 +11,12 @@ async function initPyodide() {
         pyodide = await loadPyodide();
 
         // 1. 기본 클래스 로드 (packing.py)
-        const packingResponse = await fetch('static/packing.py');
+        const packingResponse = await fetch(`static/packing.py?v=${Date.now()}`);
         const packingCode = await packingResponse.text();
         await pyodide.runPythonAsync(packingCode);
 
         // 2. RegionBasedPacker 로드 (region_based.py)
-        const regionResponse = await fetch('static/region_based.py');
+        const regionResponse = await fetch(`static/region_based.py?v=${Date.now()}`);
         let regionCode = await regionResponse.text();
 
         // import 문 제거 (이미 로드됨)

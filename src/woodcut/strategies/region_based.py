@@ -607,11 +607,9 @@ class RegionBasedPacker(PackingStrategy):
             piece_w = h if rotated else w
             piece_h = w if rotated else h
 
-            # 하단 정렬: y 위치 조정
+            # 상단 정렬 (절단 로직과 일치)
             y_offset = 0
-            if piece_h < max_height:
-                y_offset = max_height - piece_h
-
+            
             print(f"  그룹 {w}×{h} (회전={rotated}): {count}개 → y_offset={y_offset}")
 
             # 그룹의 모든 조각 배치 (수평 방향)
