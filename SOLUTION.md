@@ -33,22 +33,55 @@
 2. **절단선 우선순위 시스템**
    ```python
    priority 1: 영역 경계 (수평 절단 - 길로틴 원칙 준수)
+               + 자투리 영역 경계 (scrap_boundary)
    priority 2: 영역 상단 자투리 trim
    priority 3: 그룹 경계 (수직 절단)
    priority 4: 그룹별 개별 trim
-   priority 5: 조각 분리 절단
-   priority 6: 우측 자투리 trim
+   priority 5: 조각 분리 절단 (sub_priority=1)
+               + 우측 자투리 trim (sub_priority=2)
    ```
 
-3. **자투리 처리 추가**
-   - 영역 우측 끝: 10mm 이상 남으면 trim
+3. **자투리 처리 개선**
+   - 상단 자투리: 별도 scrap 영역으로 분리 (백트래킹 단계에서 추가)
+   - 영역 우측 끝: kerf보다 크면 무조건 trim
    - 그룹 높이 차이: 낮은 그룹은 trim
+
+4. **영역별 절단 묶음 처리**
+   - 정렬키: `(priority, region_index, sub_priority, position)`
+   - Priority 1: position만 고려 (영역 경계는 위→아래 순)
+   - Priority 2-5: region_index로 영역별 완료 후 다음 영역
 
 ### 구현 상세
 
 #### region_based.py 수정
 
-**1. 메인 루프 (`pack()` 메서드, lines 75-97)**
+**1. 백트래킹 영역 할당 + 자투리 영역 추가 (`_allocate_multi_group_backtrack()`, lines 507-531)**
+```python
+regions, count = backtrack([], set(), 0)
+
+# 상단 자투리 영역 추가 (kerf보다 크면 무조건)
+if regions:
+    last_region = regions[-1]
+    last_region_top = last_region['y'] + last_region['height']
+    remaining_height = self.plate_height - last_region_top
+
+    if remaining_height > self.kerf:
+        # 자투리 영역 추가 (조각 없음)
+        scrap_region = {
+            'type': 'scrap',
+            'x': 0,
+            'y': last_region_top,
+            'width': self.plate_width,
+            'height': remaining_height,
+            'max_height': 0,
+            'groups': []
+        }
+        regions.append(scrap_region)
+
+return regions
+```
+
+**2. 메인 루프 (`pack()` 메서드, lines 75-117)**
 ```python
 # 각 영역 배치 + 절단선 생성
 all_cuts = []
@@ -56,25 +89,55 @@ for i, region in enumerate(regions):
     placed, cuts = self._pack_multi_group_region(
         region,
         region['id'],
-        is_first_region=(i == 0)
+        region_index=i,
+        is_first_region=(i == 0),
+        is_last_region=(i == len(regions) - 1)
     )
     if placed:
         plate['pieces'].extend(placed)
+
+    # 절단선은 조각 유무와 관계없이 추가 (자투리 영역 포함)
+    if cuts:
+        for cut in cuts:
+            cut['region_index'] = i
         all_cuts.extend(cuts)
 
-# 절단선 우선순위 정렬 및 order 부여
-all_cuts.sort(key=lambda c: (c.get('priority', 100), c.get('position', 0)))
+# 절단선 우선순위 + 영역 순서 정렬
+def sort_key(cut):
+    priority = cut.get('priority', 100)
+    region_idx = cut.get('region_index', 0)
+    sub_priority = cut.get('sub_priority', 0)
+    position = cut.get('position', 0)
+
+    if priority == 1:  # 영역 경계: position만 고려
+        return (priority, position, 0, 0)
+    else:  # 영역 내부: region_index → sub_priority → position
+        return (priority, region_idx, sub_priority, position)
+
+all_cuts.sort(key=sort_key)
 for idx, cut in enumerate(all_cuts):
     cut['order'] = idx + 1
 plate['cuts'] = all_cuts
 ```
 
-**2. 영역 배치 + 절단선 생성 (`_pack_multi_group_region()`, lines 512-695)**
+**3. 영역 배치 + 절단선 생성 (`_pack_multi_group_region()`, lines 533-687)**
 
 ```python
-def _pack_multi_group_region(self, region, region_id, is_first_region):
+def _pack_multi_group_region(self, region, region_id, region_index,
+                             is_first_region, is_last_region):
     placed = []
     cuts = []
+
+    # 자투리 영역은 경계 절단선만 생성하고 종료
+    if region['type'] == 'scrap':
+        if not is_first_region:
+            cuts.append({
+                'direction': 'H',
+                'position': region_y,
+                'priority': 1,
+                'type': 'scrap_boundary'
+            })
+        return placed, cuts
 
     # 우선순위 1: 영역 경계 (첫 영역 제외)
     if not is_first_region:
@@ -114,33 +177,28 @@ def _pack_multi_group_region(self, region, region_id, is_first_region):
             'type': 'group_trim'
         })
 
-    # 우선순위 5: 조각 분리
+    # 우선순위 5: 조각 분리 절단 (sub_priority=1)
     for i in range(len(sorted_pieces) - 1):
         if i != group_boundary_idx:
             cuts.append({
                 'direction': 'V',
                 'position': curr['x'] + curr_w,
                 'priority': 5,
-                'type': 'piece_separation'
+                'type': 'piece_separation',
+                'sub_priority': 1  # 조각 분리 먼저
             })
 
-    # 우선순위 6: 우측 자투리 trim
-    if region_x_end - last_x_end > self.kerf + 10:
+    # 우선순위 5: 우측 자투리 trim (sub_priority=2)
+    if region_x_end - last_x_end > self.kerf:  # kerf보다 크면 무조건
         cuts.append({
             'direction': 'V',
             'position': last_x_end,
-            'priority': 6,
-            'type': 'right_trim'
+            'priority': 5,
+            'type': 'right_trim',
+            'sub_priority': 2  # 우측 trim은 조각 분리 후
         })
 
     return placed, cuts
-```
-
-**3. 폴백 제거 (line 58-66)**
-```python
-if not regions:
-    print("\n⚠️  백트래킹 실패 - 배치 불가능한 조각들")
-    break
 ```
 
 ## 검증 결과
@@ -165,35 +223,45 @@ pieces = [
 10. 수평  691mm ⚠️ (영역 경계가 10번째)
 ```
 
-### 현재 결과 (14개 절단선, 올바른 순서)
+### 최종 결과 (15개 절단선, 완벽한 길로틴 순서)
 ```
 절단 순서:
-1. 수평  376mm ✅ (영역 경계 - 길로틴 원칙 준수)
-2. 수평  691mm ✅ (영역 경계 - 길로틴 원칙 준수)
-3. 수직 1285mm ✅ (그룹 경계)
-4. 수평  369mm ✅ (좌측 그룹 trim)
-5. 수직  640mm ✅ (조각 분리)
-6. 수직  644mm ✅ (조각 분리)
-7. 수직  800mm ✅ (조각 분리)
-8. 수직 1293mm ✅ (조각 분리)
-9. 수직 1560mm ✅ (조각 분리)
-10. 수직 1835mm ✅ (조각 분리)
-11. 수직 2110mm ✅ (조각 분리)
-12. 수직 1605mm ✅ (우측 자투리 trim)
-13. 수직 1942mm ✅ (우측 자투리 trim)
-14. 수직 2385mm ✅ (우측 자투리 trim)
+1. 수평  376mm ✅ (영역0 경계 - 길로틴 원칙 준수)
+2. 수평  691mm ✅ (영역1 경계)
+3. 수평 1006mm ✅ (영역2 자투리 경계)
+
+# 영역 0 (0-376mm) 완료
+4. 수직 1285mm ✅ (그룹 경계)
+5. 수평  369mm ✅ (좌측 그룹 trim)
+6. 수직  640mm ✅ (조각 분리)
+7. 수직 1285mm ✅ (조각 분리)
+8. 수직 1605mm ✅ (우측 자투리 trim)
+
+# 영역 1 (376-691mm) 완료
+9. 수직  644mm ✅ (조각 분리)
+10. 수직 1293mm ✅ (조각 분리)
+11. 수직 1942mm ✅ (우측 자투리 trim)
+
+# 영역 2 (691-1006mm) 완료
+12. 수직  800mm ✅ (조각 분리)
+13. 수직 1560mm ✅ (조각 분리)
+14. 수직 1835mm ✅ (조각 분리)
+15. 수직 2385mm ✅ (우측 자투리 trim)
 
 ✅ 모든 조각이 정확한 크기입니다
 ✅ 사용률: 66.1%
+✅ 길로틴 원칙 완벽 준수: 영역 경계 → 영역별 완료
 ```
 
 ## 개선 사항 요약
 
-1. ✅ **길로틴 원칙 준수**: 영역 경계 절단이 최우선 실행
-2. ✅ **자투리 처리**: 우측 끝 자투리 trim 추가 (3개)
-3. ✅ **절단선 증가**: 11개 → 14개 (모든 조각 완전 분리)
-4. ✅ **코드 단순화**: FSM 제거, 배치와 절단 통합
-5. ✅ **폴백 제거**: 명확한 실패 처리
+1. ✅ **길로틴 원칙 준수**: 영역 경계 절단이 최우선 실행 (priority 1)
+2. ✅ **영역별 묶음 처리**: region_index로 한 영역 완료 후 다음 영역
+3. ✅ **자투리 영역 독립 처리**: 상단 자투리를 별도 scrap 영역으로 분리
+4. ✅ **우측 trim 통합**: priority 5, sub_priority 2로 조각 분리와 함께 처리
+5. ✅ **임계값 제거**: kerf보다 크면 무조건 trim (10mm 조건 삭제)
+6. ✅ **절단선 증가**: 11개 → 15개 (모든 조각 완전 분리 + 자투리 trim)
+7. ✅ **코드 단순화**: FSM 제거, 배치와 절단 통합
 
 ## 아키텍처 다이어그램
 
