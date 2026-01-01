@@ -42,12 +42,21 @@
 
                 <div class="form-group">
                     <label for="presetSelect">프리셋 불러오기</label>
-                    <select id="presetSelect" onchange="loadPreset(this.value)">
-                        <option value="">-- 프리셋 선택 --</option>
-                        <option value="basic">기본 예제 (다양한 크기)</option>
-                        <option value="cabinet">수납장 (일관된 높이)</option>
-                        <option value="shelf">선반 (긴 조각 위주)</option>
-                    </select>
+                    <div class="preset-controls">
+                        <select id="presetSelect" onchange="loadPreset(this.value)">
+                            <option value="">-- 프리셋 선택 --</option>
+                            <optgroup label="기본 프리셋">
+                                <option value="basic">기본 예제 (다양한 크기)</option>
+                                <option value="cabinet">수납장 (일관된 높이)</option>
+                                <option value="shelf">선반 (긴 조각 위주)</option>
+                            </optgroup>
+                            <optgroup id="userPresetsGroup" label="사용자 프리셋">
+                                <!-- 사용자 프리셋이 여기에 추가됨 -->
+                            </optgroup>
+                        </select>
+                        <button class="btn-save-preset" onclick="saveCurrentAsPreset()" title="현재 조각들을 프리셋으로 저장">💾 저장</button>
+                        <button class="btn-delete-preset" onclick="deleteCurrentPreset()" title="선택된 사용자 프리셋 삭제">🗑️ 삭제</button>
+                    </div>
                 </div>
 
                 <h3>조각 목록</h3>

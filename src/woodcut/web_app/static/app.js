@@ -34,8 +34,11 @@ async function initPyodide() {
     }
 }
 
-// 페이지 로드 시 Pyodide 초기화
-window.addEventListener('DOMContentLoaded', initPyodide);
+// 페이지 로드 시 Pyodide 초기화 및 사용자 프리셋 로드
+window.addEventListener('DOMContentLoaded', () => {
+    initPyodide();
+    loadUserPresets();
+});
 
 // 프리셋 데이터
 const PRESETS = {
@@ -59,12 +62,24 @@ const PRESETS = {
 
 // 프리셋 로드
 function loadPreset(presetId) {
-    if (!presetId || !PRESETS[presetId]) return;
+    if (!presetId) return;
+    
+    let pieces;
+    if (PRESETS[presetId]) {
+        pieces = PRESETS[presetId];
+    } else {
+        const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+        if (userPresets[presetId]) {
+            pieces = userPresets[presetId];
+        }
+    }
+
+    if (!pieces) return;
     
     const piecesList = document.getElementById('piecesList');
     piecesList.innerHTML = ''; // 기존 목록 초기화
     
-    PRESETS[presetId].forEach(p => {
+    pieces.forEach(p => {
         const newRow = document.createElement('div');
         newRow.className = 'piece-row';
         newRow.innerHTML = `
@@ -79,6 +94,79 @@ function loadPreset(presetId) {
     });
     
     showStatus(`프리셋 '${presetId}' 로드 완료`, 'success');
+}
+
+const USER_PRESETS_KEY = 'woodcut_user_presets';
+
+// 사용자 프리셋 로드 및 드롭다운 갱신
+function loadUserPresets() {
+    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    const group = document.getElementById('userPresetsGroup');
+    group.innerHTML = '';
+    
+    Object.keys(userPresets).forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        group.appendChild(option);
+    });
+}
+
+// 현재 설정을 프리셋으로 저장
+function saveCurrentAsPreset() {
+    const pieces = [];
+    const rows = document.querySelectorAll('.piece-row');
+    
+    rows.forEach(row => {
+        const w = parseInt(row.querySelector('.piece-width').value);
+        const h = parseInt(row.querySelector('.piece-height').value);
+        const c = parseInt(row.querySelector('.piece-count').value);
+        
+        if (w > 0 && h > 0 && c > 0) {
+            pieces.push([w, h, c]);
+        }
+    });
+
+    if (pieces.length === 0) {
+        alert('저장할 조각 정보가 없습니다.');
+        return;
+    }
+
+    const presetName = prompt('프리셋 이름을 입력하세요:');
+    if (!presetName) return;
+
+    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    userPresets[presetName] = pieces;
+    localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(userPresets));
+
+    loadUserPresets();
+    document.getElementById('presetSelect').value = presetName;
+    showStatus(`프리셋 '${presetName}' 저장 완료`, 'success');
+}
+
+// 현재 선택된 사용자 프리셋 삭제
+function deleteCurrentPreset() {
+    const select = document.getElementById('presetSelect');
+    const presetName = select.value;
+    
+    if (!presetName) return;
+    if (PRESETS[presetName]) {
+        alert('기본 프리셋은 삭제할 수 없습니다.');
+        return;
+    }
+
+    if (!confirm(`프리셋 '${presetName}'을(를) 삭제하시겠습니까?`)) {
+        return;
+    }
+
+    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    if (userPresets[presetName]) {
+        delete userPresets[presetName];
+        localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(userPresets));
+        loadUserPresets();
+        select.value = '';
+        showStatus(`프리셋 '${presetName}' 삭제 완료`, 'success');
+    }
 }
 
 // 조각 추가
