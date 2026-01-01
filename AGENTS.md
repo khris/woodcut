@@ -361,3 +361,44 @@ changes
 
 이 프로젝트는 **정확성**이 핵심입니다.
 빠르지만 틀린 결과보다, 느리지만 정확한 결과가 훨씬 낫습니다.
+
+---
+
+## IntelliJ MCP 우선 사용 규칙
+
+**IDE가 연결된 경우, 쉘 명령 대신 JetBrains MCP 도구를 사용하라.**
+
+### 필수 대체 규칙
+
+| 작업 | ❌ 금지 | ✅ 사용 |
+|------|--------|---------|
+| 파일 읽기 | `cat`, `head`, `tail` | `mcp__jetbrains__get_file_text_by_path` |
+| 파일 검색 | `find`, `ls -R` | `mcp__jetbrains__find_files_by_name_keyword` |
+| 디렉토리 구조 | `tree`, `ls` | `mcp__jetbrains__list_directory_tree` |
+| 텍스트 검색 | `grep`, `rg` | `mcp__jetbrains__search_in_files_by_text` |
+| 정규식 검색 | `grep -E`, `rg` | `mcp__jetbrains__search_in_files_by_regex` |
+| 파일 수정 | `sed`, `awk`, Edit 도구 | `mcp__jetbrains__replace_text_in_file` |
+| 파일 생성 | `touch`, Write 도구 | `mcp__jetbrains__create_new_file` |
+| 리네임/리팩토링 | 수동 수정 | `mcp__jetbrains__rename_refactoring` |
+| 코드 포맷팅 | - | `mcp__jetbrains__reformat_file` |
+| 코드 실행 | Bash | `mcp__jetbrains__execute_run_configuration` |
+| 오류 분석 | - | `mcp__jetbrains__get_file_problems` |
+
+### Bash 사용 허용 케이스
+
+다음 경우에만 Bash 도구 사용 허용:
+- `git` 명령어
+- `uv` 패키지 매니저 명령어
+- MCP에 해당 run configuration이 없는 경우의 빌드/테스트
+- IDE 터미널로 불가능한 시스템 명령
+
+### 리팩토링 시 필수
+
+- **변수/함수/클래스 이름 변경**: 반드시 `rename_refactoring` 사용
+  - 모든 참조를 자동으로 업데이트
+  - 수동 텍스트 치환 금지
+
+### 코드 수정 후
+
+1. `mcp__jetbrains__get_file_problems`로 오류 확인
+2. 필요시 `mcp__jetbrains__reformat_file`로 포맷팅
