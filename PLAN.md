@@ -31,22 +31,28 @@
 - 영역 배치 시 절단선도 함께 생성
 - 우선순위 시스템으로 길로틴 원칙 준수
 
-**절단선 우선순위 시스템:**
+**절단선 우선순위 시스템 (Two-Tier):**
 ```python
-priority 1: 영역 경계 (수평) + 자투리 영역 경계
-  - position 순으로 정렬 (위→아래)
+Tier 1 (전역): 영역 경계 분리
+  priority = region_index (1, 2, 3, ...)
+  - 모든 영역 boundary를 먼저 실행
   - 길로틴 원칙: 완전 관통 절단이 최우선
 
-priority 2: 영역 상단 자투리 trim (수평)
-priority 3: 그룹 경계 (수직)
-priority 4: 그룹별 개별 trim (수평)
-priority 5: 조각 분리 (수직, sub_priority=1)
-         + 우측 자투리 trim (수직, sub_priority=2)
+Tier 2 (영역별): 영역 내부 절단
+  priority = region_priority_base + offset
+  - region_priority_base = region_index * 100
+  - offset:
+    +10: 영역 상단 자투리 trim (수평)
+    +20: group0 조각 분리 + 경계 + trim
+    +21: group0 boundary
+    +22: group0 trim
+    +30: group1 조각 분리...
 
-정렬키: (priority, region_index, sub_priority, position)
-  - Priority 1: position만 고려 (영역 경계 위→아래)
-  - Priority 2-5: region_index → sub_priority → position
-                 (한 영역 완료 후 다음 영역)
+정렬키: (priority, sub_priority, position)
+  - 전역 실행 순서:
+    1. 모든 영역 boundary (P1, P2, P3, ...)
+    2. 영역0 내부 (P10, P20, P21, ...)
+    3. 영역1 내부 (P110, P120, P121, ...)
 ```
 
 **자투리 영역 처리:**
@@ -462,6 +468,13 @@ woodcut/
 - **영역별 묶음 처리**: region_index로 한 영역 완료 후 다음 영역
 - **임계값 제거**: kerf보다 크면 무조건 trim (10mm 조건 삭제)
 - **절단선 증가**: 11개 → 15개 (모든 조각 완전 분리 + 자투리 trim)
+
+### 12단계: Two-Tier Priority System (2026-01-04)
+- **문제**: 첫 영역은 boundary 없어서 내부를 먼저 자르고 다음 영역 boundary를 자르는 길로틴 컷 위반
+- **Tier 1 (전역)**: region_boundary는 region_index 사용 (1, 2, 3, ...)
+- **Tier 2 (지역)**: 영역 내부는 region_priority_base + offset (10, 20, ...)
+- **결과**: 모든 영역 boundary 먼저 → 각 영역 내부 순차적으로
+- **실행 순서**: P1,P2,P3 (boundaries) → P10~P99 (영역0) → P110~P199 (영역1)
 
 ---
 
