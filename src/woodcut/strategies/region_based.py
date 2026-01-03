@@ -23,7 +23,6 @@ class RegionBasedPacker(PackingStrategy):
 
     def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
         super().__init__(plate_width, plate_height, kerf, allow_rotation)
-        self.tolerance: int = 100  # 클러스터링 허용 오차 (mm) - 다중 그룹 배치용
 
     def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
         """다중 그룹 영역 배치 패킹 (재설계)"""
@@ -47,12 +46,11 @@ class RegionBasedPacker(PackingStrategy):
             # 2. 각 그룹의 회전 옵션 생성
             group_options = self._generate_group_options(groups)
 
-            # 3. 호환 가능한 그룹 세트 생성 (높이/너비 비슷한 것들)
-            group_sets = self._generate_compatible_group_sets(group_options)
-            print(f"\n호환 그룹 세트: {len(group_sets)}개 생성")
+            # 3. 회전 옵션 평면화
+            all_variants = self._flatten_group_options(group_options)
 
-            # 4. 백트래킹으로 최적 조합 찾기
-            regions = self._allocate_multi_group_backtrack(group_sets)
+            # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
+            regions = self._allocate_anchor_backtrack(all_variants)
 
             if not regions:
                 print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
@@ -146,131 +144,8 @@ class RegionBasedPacker(PackingStrategy):
 
         return plates
 
-    def _try_all_rotation_combinations(self, groups, all_pieces):
-        """백트래킹: 모든 회전 조합 + 영역 할당 전략 시도
-
-        Args:
-            groups: 레벨 1 그룹 리스트
-            all_pieces: 전체 조각 리스트
-
-        Returns:
-            최선의 plate 또는 None
-        """
-        import itertools
-
-        # 각 그룹마다 회전/비회전 선택지
-        num_groups = len(groups)
-        rotation_options = list(itertools.product([False, True], repeat=num_groups))
-
-        # 영역 할당 전략: 재귀적 백트래킹
-        allocation_strategies = ['recursive_2d']
-
-        print(f"\n백트래킹: {len(rotation_options)}가지 회전 조합 (영역 할당도 재귀적 백트래킹)")
-
-        best_plate = None
-        best_score = -1  # 점수: 배치된 조각 수
-        combo_counter = 0
-
-        for rotation_combo in rotation_options:
-            # 각 그룹에 회전 정보 할당
-            groups_with_rotation = []
-            for group, rotated in zip(groups, rotation_combo):
-                groups_with_rotation.append({
-                    **group,
-                    'rotated': rotated
-                })
-
-            # 이 조합으로 클러스터링
-            height_clusters = self._cluster_groups_by_dimension_fixed(groups_with_rotation, 'height')
-            width_clusters = self._cluster_groups_by_dimension_fixed(groups_with_rotation, 'width')
-
-            # 3가지 영역 할당 전략 시도
-            for strategy in allocation_strategies:
-                combo_counter += 1
-
-                # 영역 할당
-                regions = self._allocate_mixed_regions(height_clusters, width_clusters, strategy)
-
-                if not regions:
-                    continue  # 이 조합은 실패, 다음 조합 시도
-
-                # 각 영역 내 배치 시도
-                plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
-
-                for region in regions:
-                    placed = self._pack_region(region)
-                    if placed:
-                        plate['pieces'].extend(placed)
-
-                # 점수 계산 (배치된 조각 수)
-                score = len(plate['pieces'])
-
-                if score > best_score:
-                    best_score = score
-                    best_plate = plate
-                    print(f"  조합 {combo_counter}/{len(rotation_options) * len(allocation_strategies)} ({strategy}): {score}개 조각 배치 성공 ✓")
-                else:
-                    # 상위 10개만 출력
-                    if combo_counter <= 10:
-                        print(f"  조합 {combo_counter}/{len(rotation_options) * len(allocation_strategies)} ({strategy}): {score}개 조각 배치")
-
-                # 모든 조각 배치 성공하면 조기 종료
-                if score == len(all_pieces):
-                    print(f"\n✓ 백트래킹 성공: 모든 조각 배치 완료 ({best_score}개)")
-                    return best_plate
-
-        # 최선의 결과 반환
-        if best_plate and best_score == len(all_pieces):
-            print(f"\n✓ 백트래킹 성공: 모든 조각 배치 완료 ({best_score}개)")
-            return best_plate
-        elif best_plate:
-            print(f"\n⚠️  백트래킹 부분 성공: {best_score}/{len(all_pieces)}개 조각 배치")
-            return best_plate
-        else:
-            print("\n⚠️  백트래킹 실패: 모든 조합에서 배치 실패")
-            return None
-
-    def _cluster_groups_by_dimension_fixed(self, groups_with_rotation, dimension_type):
-        """회전이 이미 결정된 그룹들을 차원 기준으로 클러스터링
-
-        핵심: 그룹별로 독립 클러스터 생성 (세밀한 제어)
-        - 같은 크기 조각들은 함께 회전해야 연속 절단 가능
-        - 다른 크기 조각들은 별도 클러스터로 분리
-
-        Args:
-            groups_with_rotation: 각 그룹에 'rotated' 키가 포함된 리스트
-            dimension_type: 'height' 또는 'width'
-
-        Returns:
-            클러스터 리스트 (각 그룹이 독립 클러스터)
-        """
-        clusters = []
-
-        for group in groups_with_rotation:
-            rotated = group['rotated']
-            sample_piece = group['pieces'][0]
-            w, h = sample_piece['width'], sample_piece['height']
-
-            # 회전 상태에 따른 차원 값 계산
-            if dimension_type == 'height':
-                dim_value = w if rotated else h
-            else:  # 'width'
-                dim_value = h if rotated else w
-
-            # 각 그룹을 독립 클러스터로 생성 (tolerance 병합 안 함)
-            clusters.append({
-                'dimension_value': dim_value,
-                'groups': [group],
-                'total_area': group['total_area'],
-                'original_size': (w, h),  # 디버깅용
-                'rotated': rotated
-            })
-
-        # 면적이 큰 클러스터 우선
-        clusters.sort(key=lambda c: c['total_area'], reverse=True)
-
-        return clusters
-
+    
+    
 
     def _group_by_exact_size(self, pieces):
         """레벨 1: 정확히 같은 크기의 조각들끼리 그룹화
@@ -350,183 +225,213 @@ class RegionBasedPacker(PackingStrategy):
 
         return group_options
 
-    def _generate_compatible_group_sets(self, group_options):
-        """높이/너비가 비슷한 그룹들을 묶어서 "영역 후보" 생성
+    def _flatten_group_options(self, group_options):
+        """회전 옵션을 평면화하여 모든 그룹 변형 목록 생성
 
         Args:
             group_options: _generate_group_options()의 결과
 
         Returns:
-            List of sets:
-            {
-                'type': 'horizontal' or 'vertical',
-                'max_height': 최대 높이 (or max_width),
-                'groups': [
-                    {'original_size': (w, h), 'rotated': bool, 'count': n},
-                    ...
-                ],
-                'total_area': 총 면적
-            }
+            List of group variants:
+            [
+                {
+                    'original_size': (w, h),
+                    'count': n,
+                    'rotated': bool,
+                    'height': int,      # 배치 시 실제 높이
+                    'width': int,       # 배치 시 실제 너비
+                    'total_width': int, # count * width + (count-1) * kerf
+                    'area': int
+                },
+                ...
+            ]
         """
-        sets = []
+        variants = []
 
-        # 1. 모든 그룹의 모든 회전 옵션 수집
-        all_options = []
         for group_opt in group_options:
+            original_size = group_opt['original_size']
+            count = group_opt['count']
+
             for option in group_opt['options']:
-                all_options.append({
-                    'original_size': group_opt['original_size'],
-                    'count': group_opt['count'],
+                w = option['width']
+                h = option['height']
+                total_width = w * count + (count - 1) * self.kerf
+
+                variants.append({
+                    'original_size': original_size,
+                    'count': count,
                     'rotated': option['rotated'],
-                    'height': option['height'],
-                    'width': option['width'],
-                    'area': option['width'] * option['height'] * group_opt['count']
+                    'height': h,
+                    'width': w,
+                    'total_width': total_width,
+                    'area': w * h * count
                 })
 
-        # 2. 높이순 정렬
-        all_options.sort(key=lambda x: x['height'])
+        return variants
 
-        # 3. 모든 2개 그룹 조합 시도 (tolerance 기반 + 너비 제약)
-        for i in range(len(all_options)):
-            for j in range(i + 1, len(all_options)):
-                g1 = all_options[i]
-                g2 = all_options[j]
-
-                # 높이 차이 체크
-                if abs(g1['height'] - g2['height']) > self.tolerance:
-                    continue
-
-                # 너비 합계 체크 (kerf 포함)
-                w1 = g1['width'] * g1['count'] + (g1['count'] - 1) * self.kerf
-                w2 = g2['width'] * g2['count'] + (g2['count'] - 1) * self.kerf
-                total_width = w1 + self.kerf + w2
-
-                if total_width > self.plate_width:
-                    continue
-
-                # 조건 만족하면 세트 추가
-                max_height = max(g1['height'], g2['height'])
-                sets.append({
-                    'type': 'horizontal',
-                    'max_height': max_height,
-                    'groups': [
-                        {
-                            'original_size': g1['original_size'],
-                            'rotated': g1['rotated'],
-                            'count': g1['count']
-                        },
-                        {
-                            'original_size': g2['original_size'],
-                            'rotated': g2['rotated'],
-                            'count': g2['count']
-                        }
-                    ],
-                    'total_area': g1['area'] + g2['area']
-                })
-
-        # 4. 단일 그룹 세트도 추가 (폴백용)
-        for group_opt in group_options:
-            for option in group_opt['options']:
-                sets.append({
-                    'type': 'horizontal',
-                    'max_height': option['height'],
-                    'groups': [{
-                        'original_size': group_opt['original_size'],
-                        'rotated': option['rotated'],
-                        'count': group_opt['count']
-                    }],
-                    'total_area': group_opt['count'] * option['width'] * option['height']
-                })
-
-        # 5. 면적순 정렬
-        sets.sort(key=lambda s: s['total_area'], reverse=True)
-
-        return sets
-
-    def _allocate_multi_group_backtrack(self, group_sets):
-        """백트래킹으로 최적의 영역 세트 조합 찾기
+    def _build_region_with_anchor(self, anchor, all_unused, already_used):
+        """앵커를 기준으로 영역에 호환 그룹들 추가
 
         Args:
-            group_sets: _generate_compatible_group_sets()의 결과
+            anchor: 앵커 그룹 변형 (max_height 결정)
+            all_unused: 아직 사용되지 않은 모든 그룹 변형
+            already_used: 이미 사용된 그룹 original_size 집합
+
+        Returns:
+            (groups_list, used_original_sizes)
+            - groups_list: 영역에 들어갈 그룹 정보 리스트
+            - used_original_sizes: 사용된 original_size 집합
+        """
+        max_height = anchor['height']
+
+        # 앵커 먼저 추가
+        groups = [{
+            'original_size': anchor['original_size'],
+            'rotated': anchor['rotated'],
+            'count': anchor['count']
+        }]
+        used_sizes = {anchor['original_size']}
+        current_width = anchor['total_width']
+
+        # 호환 가능한 그룹 찾기
+        compatible = []
+        for v in all_unused:
+            # 이미 사용된 그룹 스킵
+            if v['original_size'] in used_sizes or v['original_size'] in already_used:
+                continue
+
+            # 같은 원본 크기인데 다른 회전 옵션인 경우도 스킵
+            if v['original_size'] == anchor['original_size']:
+                continue
+
+            # 높이 제약: v['height'] <= max_height
+            if v['height'] > max_height:
+                continue
+
+            # 너비 제약: 추가 후 전체 너비 <= plate_width
+            needed_width = self.kerf + v['total_width']
+            if current_width + needed_width > self.plate_width:
+                continue
+
+            compatible.append(v)
+
+        # 호환 그룹들을 높이 유사도순으로 정렬 (앵커와 비슷한 높이 우선)
+        # 이유: 비슷한 높이끼리 배치하면 절단 편의성이 좋고, 더 많은 그룹이 들어갈 수 있음
+        compatible.sort(key=lambda v: (abs(max_height - v['height']), -v['area']))
+
+        # 그리디하게 추가
+        for v in compatible:
+            # 다시 한 번 체크 (이미 다른 회전 옵션으로 추가된 경우)
+            if v['original_size'] in used_sizes:
+                continue
+
+            needed_width = self.kerf + v['total_width']
+            if current_width + needed_width <= self.plate_width:
+                groups.append({
+                    'original_size': v['original_size'],
+                    'rotated': v['rotated'],
+                    'count': v['count']
+                })
+                used_sizes.add(v['original_size'])
+                current_width += needed_width
+
+        return groups, used_sizes
+
+    def _allocate_anchor_backtrack(self, all_variants):
+        """앵커 그룹 기반 백트래킹으로 최적 영역 배치 찾기
+
+        Args:
+            all_variants: _flatten_group_options()의 결과
 
         Returns:
             List of regions (최적 조합) 또는 []
         """
-        # 모든 원본 그룹 크기 수집
-        all_groups = set()
-        for group_set in group_sets:
-            for group in group_set['groups']:
-                all_groups.add(group['original_size'])
+        # 원본 그룹 크기 집합 (중복 방지용)
+        all_original_sizes = {v['original_size'] for v in all_variants}
+        total_groups = len(all_original_sizes)
 
-        total_groups = len(all_groups)
-        print(f"\n[백트래킹] 총 {total_groups}개 그룹, {len(group_sets)}개 세트 옵션")
+        print(f"\n[앵커 백트래킹] 총 {total_groups}개 그룹, {len(all_variants)}개 변형 옵션")
 
-        def backtrack(selected_sets, used_groups, y_offset):
+        def backtrack(used_groups, y_offset):
             """재귀적 백트래킹
 
             Args:
-                selected_sets: 선택된 영역 세트들
-                used_groups: 이미 배치된 그룹들 (original_size 집합)
-                y_offset: 현재 y 위치 (수평 영역 쌓기)
+                used_groups: 이미 사용된 그룹의 original_size 집합
+                y_offset: 현재 y 위치
 
             Returns:
-                (최선의 영역 리스트, 배치 가능한 조각 수)
+                (best_regions, best_count)
             """
             # 종료 조건: 모든 그룹 배치 완료
             if len(used_groups) == total_groups:
-                placed_count = sum(
-                    sum(g['count'] for g in s['groups'])
-                    for s in selected_sets
-                )
-                return selected_sets, placed_count
+                return [], 0
 
-            best_sets = selected_sets
-            best_count = sum(
-                sum(g['count'] for g in s['groups'])
-                for s in selected_sets
-            )
+            best_regions = []
+            best_count = 0
 
-            # 각 세트 시도
-            for group_set in group_sets:
-                # 1. 이 세트의 그룹 중 하나라도 이미 사용됐으면 스킵
-                set_groups = {g['original_size'] for g in group_set['groups']}
-                if set_groups & used_groups:  # 교집합이 있으면
+            # 미사용 그룹 중 앵커 후보 선택
+            unused_variants = [
+                v for v in all_variants
+                if v['original_size'] not in used_groups
+            ]
+
+            # 높이 내림차순 정렬 (높은 앵커 우선 = 더 많은 그룹 수용 가능)
+            # 같은 original_size의 다른 회전 옵션 중복 제거
+            seen_sizes = set()
+            anchor_candidates = []
+            for v in sorted(unused_variants, key=lambda x: x['height'], reverse=True):
+                if v['original_size'] not in seen_sizes:
+                    anchor_candidates.append(v)
+                    seen_sizes.add(v['original_size'])
+                else:
+                    # 같은 크기의 다른 회전 옵션도 후보로 추가
+                    anchor_candidates.append(v)
+
+            # 각 앵커 후보로 영역 생성 시도
+            for anchor in anchor_candidates:
+                # 앵커가 판재 높이를 초과하면 스킵
+                region_height = anchor['height'] + self.kerf
+                if y_offset + region_height > self.plate_height:
                     continue
 
-                # 2. 공간 체크
-                if group_set['type'] == 'horizontal':
-                    region_height = group_set['max_height'] + self.kerf
+                # 이 앵커로 영역 생성 + 호환 그룹 추가
+                region_groups, region_used = self._build_region_with_anchor(
+                    anchor,
+                    unused_variants,
+                    used_groups
+                )
 
-                    if y_offset + region_height > self.plate_height:
-                        continue  # 공간 부족
+                if not region_groups:
+                    continue
 
-                    # 3. 영역 생성
-                    region = {
-                        'type': 'horizontal',
-                        'x': 0,
-                        'y': y_offset,
-                        'width': self.plate_width,
-                        'height': region_height,
-                        'max_height': group_set['max_height'],
-                        'groups': group_set['groups']
-                    }
+                # 영역 생성
+                region = {
+                    'type': 'horizontal',
+                    'x': 0,
+                    'y': y_offset,
+                    'width': self.plate_width,
+                    'height': region_height,
+                    'max_height': anchor['height'],
+                    'groups': region_groups
+                }
 
-                    # 4. 재귀 호출
-                    new_selected = selected_sets + [region]
-                    new_used = used_groups | set_groups
-                    new_y = y_offset + region_height
+                # 재귀 호출
+                new_used = used_groups | region_used
+                new_y = y_offset + region_height
 
-                    result_sets, result_count = backtrack(
-                        new_selected, new_used, new_y
-                    )
+                sub_regions, sub_count = backtrack(new_used, new_y)
 
-                    if result_count > best_count:
-                        best_count = result_count
-                        best_sets = result_sets
+                # 현재 영역에서 배치된 조각 수
+                current_count = sum(g['count'] for g in region_groups)
+                total_count = current_count + sub_count
 
-            return best_sets, best_count
+                if total_count > best_count:
+                    best_count = total_count
+                    best_regions = [region] + sub_regions
 
-        regions, count = backtrack([], set(), 0)
+            return best_regions, best_count
+
+        regions, count = backtrack(set(), 0)
 
         # 상단 자투리 영역 추가 (kerf보다 크면 무조건)
         if regions:
@@ -535,7 +440,6 @@ class RegionBasedPacker(PackingStrategy):
             remaining_height = self.plate_height - last_region_top
 
             if remaining_height > self.kerf:
-                # 자투리 영역 추가 (조각 없음)
                 scrap_region = {
                     'type': 'scrap',
                     'x': 0,
@@ -548,7 +452,7 @@ class RegionBasedPacker(PackingStrategy):
                 regions.append(scrap_region)
                 print(f"[자투리 영역 추가] y={scrap_region['y']}, height={remaining_height}mm")
 
-        print(f"[백트래킹 완료] {count}개 조각 배치, {len(regions)}개 영역")
+        print(f"[앵커 백트래킹 완료] {count}개 조각 배치, {len(regions)}개 영역")
 
         return regions
 
@@ -556,7 +460,7 @@ class RegionBasedPacker(PackingStrategy):
         """한 영역에 여러 그룹 배치 + 절단선 생성
 
         Args:
-            region: _allocate_multi_group_backtrack()가 생성한 영역 정보
+            region: _allocate_anchor_backtrack()가 생성한 영역 정보
             region_id: 영역 ID (예: 'R1', 'R2')
             region_index: 영역 인덱스 (0부터 시작)
             is_first_region: 첫 번째 영역 여부
@@ -638,113 +542,118 @@ class RegionBasedPacker(PackingStrategy):
         if not placed:
             return placed, cuts
 
-        # 1. 그룹 경계 감지 (required_h 비교)
+        # 1. x 위치로 정렬
         sorted_pieces = sorted(placed, key=lambda p: p['x'])
 
-        # 모든 조각의 required_h 수집
-        all_required_h = []
-        for p in sorted_pieces:
-            req_h = p['width'] if p.get('rotated') else p['height']
-            all_required_h.append(req_h)
-
-        max_required_h = max(all_required_h)
-
-        # 우선순위 2: 영역 상단 자투리 trim
-        if abs(max_required_h - max_height) > 1:
+        # 2. 높이별로 그룹 분할
+        groups = []  # [{pieces: [...], height: h}, ...]
+        curr_group = {'pieces': [sorted_pieces[0]], 'height': None}
+        
+        for i, piece in enumerate(sorted_pieces):
+            piece_h = piece['width'] if piece.get('rotated') else piece['height']
+            
+            if curr_group['height'] is None:
+                curr_group['height'] = piece_h
+            
+            if i > 0:
+                prev_h = sorted_pieces[i-1]['width'] if sorted_pieces[i-1].get('rotated') else sorted_pieces[i-1]['height']
+                if abs(piece_h - prev_h) > 1:  # 높이가 다르면 새 그룹
+                    groups.append(curr_group)
+                    curr_group = {'pieces': [piece], 'height': piece_h}
+                else:
+                    curr_group['pieces'].append(piece)
+        
+        groups.append(curr_group)  # 마지막 그룹 추가
+        
+        max_height_in_region = max(g['height'] for g in groups)
+        
+        # 3. 영역 상단 자투리 trim (Priority 2)
+        if abs(max_height_in_region - max_height) > 1:
             cuts.append({
                 'direction': 'H',
-                'position': region_y + max_required_h,
+                'position': region_y + max_height_in_region,
                 'start': region['x'],
                 'end': region['x'] + region['width'],
                 'priority': 2,
                 'type': 'region_trim'
             })
-            print(f"  → 영역 상단 trim: y={region_y + max_required_h}")
-
-        # 그룹 경계 찾기
-        group_boundary_idx = -1
-        boundary_x = None
-        for i in range(len(sorted_pieces) - 1):
-            curr = sorted_pieces[i]
-            next_piece = sorted_pieces[i + 1]
-
-            # required_h 계산 (회전 고려)
-            curr_h = curr['width'] if curr.get('rotated') else curr['height']
-            next_h = next_piece['width'] if next_piece.get('rotated') else next_piece['height']
-
-            # required_h가 다르면 그룹 경계
-            if abs(curr_h - next_h) > 1:
-                group_boundary_idx = i
+            print(f"  → 영역 상단 trim: y={region_y + max_height_in_region}")
+        
+        # 4. 그룹별 인터리브 절단선 생성
+        for group_idx, group in enumerate(groups):
+            group_pieces = group['pieces']
+            group_h = group['height']
+            
+            # Priority base = 5 + group_idx * 10
+            priority_base = 5 + group_idx * 10
+            
+            # 4a. 현재 그룹 내 조각 분리 (piece_separation)
+            for i in range(len(group_pieces) - 1):
+                curr = group_pieces[i]
                 curr_w = curr['height'] if curr.get('rotated') else curr['width']
-                boundary_x = curr['x'] + curr_w
-
-                # 우선순위 3: 그룹 경계 절단
+                
+                cuts.append({
+                    'direction': 'V',
+                    'position': curr['x'] + curr_w,
+                    'start': region_y,
+                    'end': region_y + group_h,
+                    'priority': priority_base,
+                    'type': 'piece_separation',
+                    'sub_priority': 1
+                })
+            
+            # 4b. 그룹 우측 자투리 trim (마지막 조각 후)
+            last_piece = group_pieces[-1]
+            last_w = last_piece['height'] if last_piece.get('rotated') else last_piece['width']
+            last_x_end = last_piece['x'] + last_w
+            
+            # 마지막 그룹이면 영역 끝까지, 아니면 다음 그룹 시작까지
+            if group_idx == len(groups) - 1:
+                region_x_end = region['x'] + region['width']
+                if region_x_end - last_x_end > self.kerf:
+                    cuts.append({
+                        'direction': 'V',
+                        'position': last_x_end,
+                        'start': region_y,
+                        'end': region_y + group_h,
+                        'priority': priority_base,
+                        'type': 'right_trim',
+                        'sub_priority': 2
+                    })
+            
+            # 4c. 다음 그룹과의 경계 (group_boundary)
+            if group_idx < len(groups) - 1:
+                next_group = groups[group_idx + 1]
+                next_h = next_group['height']
+                
+                # 경계 위치: 현재 그룹 마지막 조각 끝
+                boundary_x = last_x_end
+                
                 cuts.append({
                     'direction': 'V',
                     'position': boundary_x,
                     'start': region_y,
-                    'end': region_y + max_required_h,
-                    'priority': 3,
-                    'type': 'group_boundary'
+                    'end': region_y + max(group_h, next_h),  # 두 그룹 중 더 높은 곳까지
+                    'priority': priority_base + 1,
+                    'type': 'group_boundary',
+                    'sub_priority': 0
                 })
-                print(f"  → 그룹 경계 절단: x={boundary_x} ({curr_h}mm vs {next_h}mm)")
-                break  # 첫 번째 경계만 처리
-
-        # 우선순위 4: 각 그룹별 개별 trim
-        if group_boundary_idx >= 0 and boundary_x is not None:
-            left_pieces = sorted_pieces[:group_boundary_idx+1]
-            left_h = left_pieces[0]['width'] if left_pieces[0].get('rotated') else left_pieces[0]['height']
-
-            if abs(left_h - max_required_h) > 1:
-                cuts.append({
-                    'direction': 'H',
-                    'position': region_y + left_h,
-                    'start': region['x'],
-                    'end': boundary_x,
-                    'priority': 4,
-                    'type': 'group_trim'
-                })
-                print(f"  → 좌측 그룹 trim: y={region_y + left_h}")
-
-        # 우선순위 5: 조각 분리 절단 + 자투리 trim (영역별 묶음)
-        for i in range(len(sorted_pieces) - 1):
-            curr = sorted_pieces[i]
-            curr_w = curr['height'] if curr.get('rotated') else curr['width']
-
-            # 그룹 경계는 이미 처리
-            if i == group_boundary_idx:
-                continue
-
-            cuts.append({
-                'direction': 'V',
-                'position': curr['x'] + curr_w,
-                'start': region_y,
-                'end': region_y + max_required_h,
-                'priority': 5,
-                'type': 'piece_separation',
-                'sub_priority': 1  # 조각 분리 먼저
-            })
-
-        # 우선순위 5: 영역 우측 자투리 trim (조각 분리 직후, 같은 영역)
-        last_piece = sorted_pieces[-1]
-        last_w = last_piece['height'] if last_piece.get('rotated') else last_piece['width']
-        last_x_end = last_piece['x'] + last_w
-        region_x_end = region['x'] + region['width']
-
-        if region_x_end - last_x_end > self.kerf:  # 자투리가 kerf보다 크면 무조건
-            cuts.append({
-                'direction': 'V',
-                'position': last_x_end,
-                'start': region_y,
-                'end': region_y + max_required_h,
-                'priority': 5,
-                'type': 'right_trim',
-                'sub_priority': 2  # 우측 trim은 조각 분리 후
-            })
-
-        # 상단 자투리는 별도 scrap 영역으로 처리하므로 여기서는 제거
-
-        # 4. placed_w/h 설정
+                print(f"  → 그룹 경계: x={boundary_x} (그룹 {group_idx} vs {group_idx+1})")
+                
+                # 4d. 다음 그룹 높이 trim (필요한 경우만)
+                if next_h < group_h:
+                    cuts.append({
+                        'direction': 'H',
+                        'position': region_y + next_h,
+                        'start': boundary_x,
+                        'end': region['x'] + region['width'],  # 영역 끝까지
+                        'priority': priority_base + 2,
+                        'type': 'group_trim',
+                        'sub_priority': 0
+                    })
+                    print(f"  → 다음 그룹 trim: y={region_y + next_h}, x={boundary_x}~끝")
+        
+        # 5. placed_w/h 설정
         for piece in placed:
             if piece.get('rotated', False):
                 piece['placed_w'] = piece['height']
@@ -754,92 +663,6 @@ class RegionBasedPacker(PackingStrategy):
                 piece['placed_h'] = piece['height']
 
         return placed, cuts
-
-    def _cluster_groups_by_dimension(self, groups, dimension_type='height'):
-        """레벨 2: 비슷한 그룹들끼리 클러스터링
-
-        Args:
-            groups: _group_by_exact_size()의 결과 (레벨 1 그룹 리스트)
-            dimension_type: 'height' 또는 'width'
-
-        Returns:
-            List of clusters, 각 클러스터는:
-            {
-                'dimension_value': 대표 높이/너비,
-                'groups': [그룹들],
-                'total_area': 클러스터 총 면적
-            }
-        """
-        # 1. 각 그룹의 회전/비회전 옵션 생성
-        group_options = []
-
-        for group in groups:
-            w, h = group['size']
-
-            # 원래 방향
-            if dimension_type == 'height':
-                dim_value = h
-            else:  # width
-                dim_value = w
-
-            group_options.append({
-                'group': group,
-                'dim_value': dim_value,
-                'rotated': False
-            })
-
-            # 회전 방향 (allow_rotation이면)
-            if self.allow_rotation:
-                if dimension_type == 'height':
-                    rotated_dim_value = w
-                else:  # width
-                    rotated_dim_value = h
-
-                group_options.append({
-                    'group': group,
-                    'dim_value': rotated_dim_value,
-                    'rotated': True
-                })
-
-        # 2. 차원 값으로 정렬
-        group_options.sort(key=lambda x: x['dim_value'])
-
-        # 3. 비슷한 차원 값끼리 클러스터링 (tolerance 기반)
-        clusters = []
-
-        for opt in group_options:
-            # 기존 클러스터에 합칠 수 있는지 확인
-            merged = False
-            for cluster in clusters:
-                if abs(cluster['dimension_value'] - opt['dim_value']) <= self.tolerance:
-                    # 그룹 정보에 회전 정보 추가
-                    group_with_rotation = {
-                        **opt['group'],
-                        'rotated': opt['rotated']
-                    }
-                    cluster['groups'].append(group_with_rotation)
-                    cluster['total_area'] += opt['group']['total_area']
-                    # 최대값으로 대표 값 업데이트 (영역 크기는 최대 조각에 맞춰야 함)
-                    cluster['dimension_value'] = max(cluster['dimension_value'], opt['dim_value'])
-                    merged = True
-                    break
-
-            if not merged:
-                # 새 클러스터 생성
-                group_with_rotation = {
-                    **opt['group'],
-                    'rotated': opt['rotated']
-                }
-                clusters.append({
-                    'dimension_value': opt['dim_value'],
-                    'groups': [group_with_rotation],
-                    'total_area': opt['group']['total_area']
-                })
-
-        # 4. 면적이 큰 클러스터 우선 (공간 활용률)
-        clusters.sort(key=lambda c: c['total_area'], reverse=True)
-
-        return clusters
 
     def _allocate_mixed_regions(self, height_clusters, width_clusters, strategy='horizontal_first'):
         """높이 기반 + 너비 기반 클러스터를 혼합하여 영역 할당
