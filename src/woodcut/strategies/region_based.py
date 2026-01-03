@@ -78,7 +78,8 @@ class RegionBasedPacker(PackingStrategy):
                     region['id'],
                     region_index=i,
                     is_first_region=(i == 0),
-                    is_last_region=(i == len(regions) - 1)
+                    is_last_region=(i == len(regions) - 1),
+                    region_priority_base=i * 100
                 )
                 if placed:
                     plate['pieces'].extend(placed)
@@ -456,7 +457,7 @@ class RegionBasedPacker(PackingStrategy):
 
         return regions
 
-    def _pack_multi_group_region(self, region, region_id, region_index, is_first_region, is_last_region=False):
+    def _pack_multi_group_region(self, region, region_id, region_index, is_first_region, is_last_region=False, region_priority_base=0):
         """한 영역에 여러 그룹 배치 + 절단선 생성
 
         Args:
@@ -485,20 +486,20 @@ class RegionBasedPacker(PackingStrategy):
                     'position': region_y,
                     'start': 0,
                     'end': self.plate_width,
-                    'priority': 1,
+                    'priority': region_index,
                     'type': 'scrap_boundary'
                 })
             return placed, cuts
 
         # 영역 경계 절단선 (첫 영역 제외)
-        # 우선순위 1: 영역 경계 (길로틴 순서 최우선)
+        # 우선순위: 전역적 영역 순서 (모든 영역 boundary를 먼저)
         if not is_first_region:
             cuts.append({
                 'direction': 'H',
                 'position': region_y,
                 'start': 0,
                 'end': self.plate_width,
-                'priority': 1,
+                'priority': region_index,
                 'type': 'region_boundary'
             })
 
@@ -567,14 +568,14 @@ class RegionBasedPacker(PackingStrategy):
         
         max_height_in_region = max(g['height'] for g in groups)
         
-        # 3. 영역 상단 자투리 trim (Priority 2)
+        # 3. 영역 상단 자투리 trim (영역 내부 절단선)
         if abs(max_height_in_region - max_height) > 1:
             cuts.append({
                 'direction': 'H',
                 'position': region_y + max_height_in_region,
                 'start': region['x'],
                 'end': region['x'] + region['width'],
-                'priority': 2,
+                'priority': region_priority_base + 10,
                 'type': 'region_trim'
             })
             print(f"  → 영역 상단 trim: y={region_y + max_height_in_region}")
@@ -583,9 +584,9 @@ class RegionBasedPacker(PackingStrategy):
         for group_idx, group in enumerate(groups):
             group_pieces = group['pieces']
             group_h = group['height']
-            
-            # Priority base = 5 + group_idx * 10
-            priority_base = 5 + group_idx * 10
+
+            # Priority base = region_priority_base + 20 + group_idx * 10 (영역 내부)
+            priority_base = region_priority_base + 20 + group_idx * 10
             
             # 4a. 현재 그룹 내 조각 분리 (piece_separation)
             for i in range(len(group_pieces) - 1):
