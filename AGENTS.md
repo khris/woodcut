@@ -62,9 +62,9 @@ if (req_h := piece.get('height')) > max_height:
 - 다중 판 지원 (while 루프)
 
 **주의사항:**
-- tolerance 값 (기본 100mm)이 그룹 호환성 결정
-- 하단 정렬(bottom-alignment)로 높이 차이 처리
+- 정확히 같은 크기끼리만 그룹화 (유사 크기 병합 미지원)
 - 그룹 단위 회전으로 작업 편의성 확보
+- 백트래킹으로 최적 조합 탐색
 
 ### 2-Phase Cutting
 
@@ -152,7 +152,7 @@ if (req_h := piece.get('height')) > max_height:
   ↓
 그룹화 (exact size)
   ↓
-호환 세트 생성 (tolerance 기반)
+그룹 옵션 평면화
   ↓
 백트래킹 영역 할당
   ↓
@@ -310,7 +310,7 @@ pieces = [
 
 - **회전 불허**: 세로 조각이 다음 판으로
 - **같은 크기 많은 조각**: 그룹화 효과 확인
-- **다양한 크기**: tolerance 영향 확인
+- **다양한 크기**: 그룹화 효과 확인
 
 ---
 
@@ -320,7 +320,7 @@ pieces = [
 
 ```bash
 # 좋은 예
-feat: add dynamic tolerance adjustment
+feat: add similar size group merging
 fix: correct trimming cut priority calculation
 docs: update PLAN.md with Phase 2 algorithm details
 

@@ -17,8 +17,8 @@ def pack(self, pieces):
         # 2. 각 그룹의 회전 옵션 생성
         group_options = self._generate_group_options(groups)
 
-        # 3. 호환 가능한 그룹 세트 생성 (tolerance=100mm)
-        group_sets = self._generate_compatible_group_sets(group_options)
+        # 3. 그룹 회전 옵션 평면화
+        all_variants = self._flatten_group_options(group_options)
 
         # 4. 백트래킹으로 최적 조합 찾기
         regions = self._allocate_multi_group_backtrack(group_sets)
@@ -63,12 +63,9 @@ def pack(self, pieces):
 }
 ```
 
-**생성 조건:**
-1. 높이 차이가 `tolerance` 이내 (기본 100mm)
-2. 너비 합계가 원판 너비 이내 (kerf 포함)
-3. 단일 그룹 세트도 폴백용으로 추가
+**주의**: 현재는 정확히 같은 크기끼리만 그룹화됩니다. 유사 크기 병합 기능은 향후 개선 예정입니다.
 
-**참조**: `src/woodcut/strategies/region_based.py`의 `_generate_compatible_group_sets()` 메서드
+**참조**: `src/woodcut/strategies/region_based.py`의 `_flatten_group_options()` 메서드
 
 ---
 
