@@ -313,9 +313,28 @@ if (req_h := piece.get('height')) > max_height:
 
 ---
 
+## 다단 배치 (Multi-Tier, 선택적)
+
+**현재 상태**: 계획 단계
+
+옵션 활성화 시 남은 공간에 추가 행을 배치하여 공간 활용률을 향상시키는 기능입니다.
+
+**핵심 개념:**
+- 같은 높이 → 같은 영역 (최우선)
+- 남은 공간 > threshold → 추가 행 배치 (보수적)
+- 각 행은 독립적인 수평 절단선으로 분리 (Guillotine 준수)
+
+**상세**: [.solution/002-20260104-multi-tier-placement.md](../.solution/002-20260104-multi-tier-placement.md)
+
+---
+
 ## 참고
 
 상세 구현은 다음 파일 참조:
 - `src/woodcut/strategies/region_based.py` - 메인 알고리즘
 - `src/woodcut/packing.py` - Guillotine Cut FSM (현재 미사용)
 - `src/woodcut/visualizer.py` - 시각화
+
+솔루션 문서:
+- [001: Guillotine 절단 통합](../.solution/001-20251231-guillotine-cutting-integration.md)
+- [002: 다단 배치](../.solution/002-20260104-multi-tier-placement.md)

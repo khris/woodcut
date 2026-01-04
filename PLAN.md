@@ -123,9 +123,18 @@ woodcut/
 
 ## 향후 개선 (단기)
 
-- [ ] 다단 배치 지원 (한 영역에 여러 행/열)
+- [ ] 다단 배치 지원 - 옵션 기반, 보수적 (상세: [.solution/002](.solution/002-20260104-multi-tier-placement.md))
 - [ ] CSV/JSON 입력 지원
 - [ ] 웹 UI 개선
+
+---
+
+## 솔루션 문서
+
+프로젝트의 주요 개선 작업들은 `.solution/` 디렉터리에 별도 문서화:
+
+- [001: Guillotine 절단 통합](.solution/001-20251231-guillotine-cutting-integration.md) - 배치와 절단 통합, Two-Tier Priority 시스템
+- [002: 다단 배치](.solution/002-20260104-multi-tier-placement.md) - 남은 공간 활용 (계획 단계)
 
 ---
 
