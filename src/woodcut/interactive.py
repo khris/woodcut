@@ -93,10 +93,21 @@ def run_interactive():
         pieces.append((w, h, c))
         print(f"  + 조각 추가: {w}x{h}mm, {c}개")
 
-    # 영역 기반 패킹 전략 사용
-    packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
-    strategy_name = "region_based"
-    print("\n영역 기반 패킹 전략 사용")
+    # 패킹 전략 선택
+    print("\n[패킹 전략 선택]")
+    print("1. 기본 (RegionBasedPacker)")
+    print("2. 그룹 분할 (큰 그룹 자동 분할, 무한 루프 방지)")
+    strategy_input = input("전략 선택 (1/2, 기본값 1): ").strip() or "1"
+
+    if strategy_input == "2":
+        from .strategies.region_based_split import RegionBasedPackerWithSplit
+        packer = RegionBasedPackerWithSplit(plate_width, plate_height, kerf, allow_rotation)
+        strategy_name = "region_based_split"
+        print("✓ 그룹 분할 전략 사용")
+    else:
+        packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+        strategy_name = "region_based"
+        print("✓ 기본 전략 사용")
 
     # 패킹 실행
     plates = packer.pack(pieces)
