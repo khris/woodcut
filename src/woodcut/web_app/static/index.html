@@ -41,6 +41,14 @@
                 </div>
 
                 <div class="form-group">
+                    <label for="strategySelect">패킹 전략</label>
+                    <select id="strategySelect">
+                        <option value="region_based">Region Based (기본)</option>
+                        <option value="region_based_split">Region Based with Split (그룹 분할, 무한 루프 방지)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
                     <label for="presetSelect">프리셋 불러오기</label>
                     <div class="preset-controls">
                         <select id="presetSelect" onchange="loadPreset(this.value)">

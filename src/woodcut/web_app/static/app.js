@@ -25,6 +25,16 @@ async function initPyodide() {
 
         await pyodide.runPythonAsync(regionCode);
 
+        // 3. RegionBasedPackerWithSplit 로드 (region_based_split.py)
+        const splitResponse = await fetch(`static/region_based_split.py?v=${Date.now()}`);
+        let splitCode = await splitResponse.text();
+
+        // import 문 제거 (이미 로드됨)
+        splitCode = splitCode.replace(/from __future__ import annotations\n/g, '');
+        splitCode = splitCode.replace(/from \.region_based import[^\n]*\n/g, '');
+
+        await pyodide.runPythonAsync(splitCode);
+
         packerReady = true;
         showStatus('준비 완료', 'success');
 
@@ -214,6 +224,7 @@ async function calculateCutting() {
     const plateHeight = parseInt(document.getElementById('plateHeight').value);
     const kerf = parseInt(document.getElementById('kerf').value);
     const allowRotation = document.getElementById('allowRotation').checked;
+    const strategy = document.getElementById('strategySelect').value;
 
     const pieces = [];
     const pieceRows = document.querySelectorAll('.piece-row');
@@ -241,8 +252,13 @@ async function calculateCutting() {
         pyodide.globals.set('kerf', kerf);
         pyodide.globals.set('allow_rotation', allowRotation);
 
+        // 전략 선택에 따라 다른 패커 사용
+        const packerClass = strategy === 'region_based_split'
+            ? 'RegionBasedPackerWithSplit'
+            : 'RegionBasedPacker';
+
         const result = await pyodide.runPythonAsync(`
-packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+packer = ${packerClass}(plate_width, plate_height, kerf, allow_rotation)
 plates = packer.pack(pieces_input)
 
 # 통계 계산

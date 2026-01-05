@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..strategies import RegionBasedPacker
+from ..strategies.region_based_split import RegionBasedPackerWithSplit
 
 # 파일 디렉토리 경로
 CURR_DIR = Path(__file__).parent
@@ -39,6 +40,7 @@ class CuttingRequest(BaseModel):
     plate_height: int = 1220
     kerf: int = 5
     allow_rotation: bool = True
+    strategy: str = "region_based"
     pieces: list[PieceInput]
 
 
@@ -67,13 +69,21 @@ async def calculate_cutting(request: CuttingRequest):
         if not pieces:
             raise HTTPException(status_code=400, detail="조각 정보가 없습니다")
 
-        # 패킹 실행
-        packer = RegionBasedPacker(
-            request.plate_width,
-            request.plate_height,
-            request.kerf,
-            request.allow_rotation
-        )
+        # 전략 선택에 따라 패커 생성
+        if request.strategy == "region_based_split":
+            packer = RegionBasedPackerWithSplit(
+                request.plate_width,
+                request.plate_height,
+                request.kerf,
+                request.allow_rotation
+            )
+        else:
+            packer = RegionBasedPacker(
+                request.plate_width,
+                request.plate_height,
+                request.kerf,
+                request.allow_rotation
+            )
         plates = packer.pack(pieces)
 
         # 통계 계산
