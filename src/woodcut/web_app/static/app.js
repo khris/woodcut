@@ -224,6 +224,7 @@ async function calculateCutting() {
     const plateHeight = parseInt(document.getElementById('plateHeight').value);
     const kerf = parseInt(document.getElementById('kerf').value);
     const allowRotation = document.getElementById('allowRotation').checked;
+    const enableMultiTier = document.getElementById('enableMultiTier').checked;
     const strategy = document.getElementById('strategySelect').value;
 
     const pieces = [];
@@ -251,6 +252,7 @@ async function calculateCutting() {
         pyodide.globals.set('plate_height', plateHeight);
         pyodide.globals.set('kerf', kerf);
         pyodide.globals.set('allow_rotation', allowRotation);
+        pyodide.globals.set('enable_multi_tier', enableMultiTier);
 
         // 전략 선택에 따라 다른 패커 사용
         const packerClass = strategy === 'region_based_split'
@@ -258,7 +260,7 @@ async function calculateCutting() {
             : 'RegionBasedPacker';
 
         const result = await pyodide.runPythonAsync(`
-packer = ${packerClass}(plate_width, plate_height, kerf, allow_rotation)
+packer = ${packerClass}(plate_width, plate_height, kerf, allow_rotation, enable_multi_tier=enable_multi_tier)
 plates = packer.pack(pieces_input)
 
 # 통계 계산

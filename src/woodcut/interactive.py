@@ -99,15 +99,27 @@ def run_interactive():
     print("2. 그룹 분할 (큰 그룹 자동 분할, 무한 루프 방지)")
     strategy_input = input("전략 선택 (1/2, 기본값 1): ").strip() or "1"
 
+    # 다단 배치 옵션
+    print("\n[다단 배치]")
+    print("남은 공간에 작은 조각 추가 배치 (보수적)")
+    enable_multi_tier_input = input("활성화? (y/n, 기본: n): ").strip().lower()
+    enable_multi_tier = enable_multi_tier_input == 'y'
+
     if strategy_input == "2":
         from .strategies.region_based_split import RegionBasedPackerWithSplit
-        packer = RegionBasedPackerWithSplit(plate_width, plate_height, kerf, allow_rotation)
+        packer = RegionBasedPackerWithSplit(
+            plate_width, plate_height, kerf, allow_rotation,
+            enable_multi_tier=enable_multi_tier
+        )
         strategy_name = "region_based_split"
-        print("✓ 그룹 분할 전략 사용")
+        print(f"✓ 그룹 분할 전략 사용 (다단: {enable_multi_tier})")
     else:
-        packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+        packer = RegionBasedPacker(
+            plate_width, plate_height, kerf, allow_rotation,
+            enable_multi_tier=enable_multi_tier
+        )
         strategy_name = "region_based"
-        print("✓ 기본 전략 사용")
+        print(f"✓ 기본 전략 사용 (다단: {enable_multi_tier})")
 
     # 패킹 실행
     plates = packer.pack(pieces)
