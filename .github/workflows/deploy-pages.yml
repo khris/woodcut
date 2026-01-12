@@ -24,15 +24,34 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Build docs directory
         run: |
           mkdir -p _site/static
+          
+          # 정적 파일 복사 (HTML, CSS, JS)
           cp src/woodcut/web_app/static/index.html _site/
           cp src/woodcut/web_app/static/style.css _site/static/
           cp src/woodcut/web_app/static/app.js _site/static/
-          cp src/woodcut/packing.py _site/static/
-          cp src/woodcut/strategies/region_based.py _site/static/
+          
+          # app.js에서 필요한 Python 파일 동적 추출 및 복사
+          echo "=== app.js에서 필요한 Python 파일 추출 중 ==="
+          python3 scripts/extract_web_dependencies.py | while read -r py_file; do
+            echo "복사: $py_file -> _site/static/"
+            cp "$py_file" _site/static/
+          done
+          
+          # Jekyll 비활성화
           touch _site/.nojekyll
+          
+          echo "=== 빌드 완료 ==="
+          echo "복사된 파일 목록:"
+          ls -lh _site/
+          ls -lh _site/static/
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
