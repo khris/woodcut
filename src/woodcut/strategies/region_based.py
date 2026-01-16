@@ -55,16 +55,11 @@ class RegionBasedPacker(PackingStrategy):
             # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
             regions = self._allocate_anchor_backtrack(all_variants)
 
+            # 폴백 전략 사용 여부 판단
+            use_fallback = False
             if not regions:
                 print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
-                plate = {'pieces': [], 'cuts': [], 'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]}
-                for piece in remaining_pieces:
-                    placement = self._find_best_placement_simple(plate['free_spaces'], plate['pieces'], piece)
-                    if placement:
-                        self._apply_placement(plate['free_spaces'], plate['pieces'], piece, placement)
-                self.generate_guillotine_cuts(plate)
-                plates.append(plate)
-                break
+                use_fallback = True
 
             # ★ Multi-Tier 옵션이 켜진 경우
             if getattr(self, 'enable_multi_tier', False) and remaining_pieces:
@@ -118,7 +113,40 @@ class RegionBasedPacker(PackingStrategy):
                         else:
                             print(f"  → 조건 불충족, 스킵")
 
-            # 5. 각 영역 내 배치 및 절단선 생성
+            # 5. 폴백 또는 일반 배치
+            if use_fallback:
+                plate = {'pieces': [], 'cuts': [], 'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]}
+                for piece in remaining_pieces:
+                    placement = self._find_best_placement_simple(plate['free_spaces'], plate['pieces'], piece)
+                    if placement:
+                        self._apply_placement(plate['free_spaces'], plate['pieces'], piece, placement)
+                self.generate_guillotine_cuts(plate)
+                plates.append(plate)
+                
+                # 폴백으로도 배치 못한 경우 무한 루프 방지
+                if not plate['pieces']:
+                    print("\n⚠️  폴백 전략으로도 배치 실패, 종료")
+                    break
+                
+                # 배치 성공 시 remaining_pieces 업데이트 후 다음 판으로
+                placed_sizes = {}
+                for p in plate['pieces']:
+                    size_key = (p['width'], p['height'])
+                    placed_sizes[size_key] = placed_sizes.get(size_key, 0) + 1
+
+                new_remaining = []
+                for piece in remaining_pieces:
+                    size_key = (piece['width'], piece['height'])
+                    if size_key in placed_sizes and placed_sizes[size_key] > 0:
+                        placed_sizes[size_key] -= 1
+                    else:
+                        new_remaining.append(piece)
+
+                remaining_pieces = new_remaining
+                plate_num += 1
+                continue
+
+            # 일반 배치: 각 영역 내 배치 및 절단선 생성
             plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
 
             # 영역 ID 할당
@@ -311,7 +339,7 @@ class RegionBasedPacker(PackingStrategy):
             for option in group_opt['options']:
                 w = option['width']
                 h = option['height']
-                total_width = w * count + (count - 1) * self.kerf
+                total_width = (w + self.kerf) * count
 
                 variants.append({
                     'original_size': original_size,
@@ -448,6 +476,10 @@ class RegionBasedPacker(PackingStrategy):
                 # 앵커가 판재 높이를 초과하면 스킵
                 region_height = anchor['height'] + self.kerf
                 if y_offset + region_height > self.plate_height:
+                    continue
+
+                # 앵커가 판재 너비를 초과하면 스킵
+                if anchor['total_width'] > self.plate_width:
                     continue
 
                 # 이 앵커로 영역 생성 + 호환 그룹 추가
