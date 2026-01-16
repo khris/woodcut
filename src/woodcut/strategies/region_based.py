@@ -322,6 +322,7 @@ class RegionBasedPacker(PackingStrategy):
                     'original_size': (w, h),
                     'count': n,
                     'rotated': bool,
+                    'stacked': bool,    # 세로 배치 여부
                     'height': int,      # 배치 시 실제 높이
                     'width': int,       # 배치 시 실제 너비
                     'total_width': int, # count * width + (count-1) * kerf
@@ -339,17 +340,35 @@ class RegionBasedPacker(PackingStrategy):
             for option in group_opt['options']:
                 w = option['width']
                 h = option['height']
-                total_width = (w + self.kerf) * count
 
+                # 가로 배치 옵션 (기본)
+                total_width_h = (w + self.kerf) * count
                 variants.append({
                     'original_size': original_size,
                     'count': count,
                     'rotated': option['rotated'],
+                    'stacked': False,  # 가로 배치
                     'height': h,
                     'width': w,
-                    'total_width': total_width,
+                    'total_width': total_width_h,
                     'area': w * h * count
                 })
+
+                # 세로 배치 옵션 (가로 배치가 판재 너비 초과 시)
+                if total_width_h > self.plate_width and count > 1:
+                    total_height_v = (h + self.kerf) * count
+                    # 높이 체크
+                    if total_height_v <= self.plate_height:
+                        variants.append({
+                            'original_size': original_size,
+                            'count': count,
+                            'rotated': option['rotated'],
+                            'stacked': True,  # 세로 배치
+                            'height': total_height_v,  # 전체 높이
+                            'width': w,
+                            'total_width': w + self.kerf,  # 한 조각 너비
+                            'area': w * h * count
+                        })
 
         return variants
 
@@ -372,7 +391,8 @@ class RegionBasedPacker(PackingStrategy):
         groups = [{
             'original_size': anchor['original_size'],
             'rotated': anchor['rotated'],
-            'count': anchor['count']
+            'count': anchor['count'],
+            'stacked': anchor.get('stacked', False)  # 세로 배치 여부
         }]
         used_sizes = {anchor['original_size']}
         current_width = anchor['total_width']
@@ -414,7 +434,8 @@ class RegionBasedPacker(PackingStrategy):
                 groups.append({
                     'original_size': v['original_size'],
                     'rotated': v['rotated'],
-                    'count': v['count']
+                    'count': v['count'],
+                    'stacked': v.get('stacked', False)  # 세로 배치 여부
                 })
                 used_sizes.add(v['original_size'])
                 current_width += needed_width
@@ -615,6 +636,7 @@ class RegionBasedPacker(PackingStrategy):
                 w, h = group['original_size']
                 rotated = group['rotated']
                 count = group['count']
+                stacked = group.get('stacked', False)  # 세로 배치 여부
 
                 # 회전 적용
                 piece_w = h if rotated else w
@@ -623,27 +645,50 @@ class RegionBasedPacker(PackingStrategy):
                 # 상단 정렬 (절단 로직과 일치)
                 y_offset = 0
                 
-                print(f"  [행 {row_idx+1}] 그룹 {w}×{h} (회전={rotated}): {count}개 → y={current_y}")
+                mode_str = "세로" if stacked else "가로"
+                print(f"  [행 {row_idx+1}] 그룹 {w}×{h} (회전={rotated}, {mode_str}배치): {count}개 → y={current_y}")
 
-                # 그룹의 모든 조각 배치 (수평 방향)
-                for _ in range(count):
-                    # 공간 체크
-                    if current_x + piece_w > region['x'] + region['width']:
-                        print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
-                        return None, []  # 배치 실패
+                if stacked:
+                    # 세로 배치: 조각들을 세로로 쌓음
+                    for i in range(count):
+                        # 공간 체크
+                        if current_x + piece_w > region['x'] + region['width']:
+                            print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
+                            return None, []
 
-                    placed.append({
-                        'width': w,
-                        'height': h,
-                        'x': current_x,
-                        'y': current_y + y_offset,
-                        'rotated': rotated,
-                        # placed_w/h는 절단 알고리즘이 설정 (미리 설정하면 트리밍 절단 생성 안 됨)
-                        'id': len(placed),
-                        'original': (w, h)
-                    })
+                        piece_y = current_y + y_offset + i * (piece_h + self.kerf)
+
+                        placed.append({
+                            'width': w,
+                            'height': h,
+                            'x': current_x,
+                            'y': piece_y,
+                            'rotated': rotated,
+                            'id': len(placed),
+                            'original': (w, h)
+                        })
 
                     current_x += piece_w + self.kerf
+                else:
+                    # 가로 배치: 기존 로직
+                    for _ in range(count):
+                        # 공간 체크
+                        if current_x + piece_w > region['x'] + region['width']:
+                            print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
+                            return None, []  # 배치 실패
+
+                        placed.append({
+                            'width': w,
+                            'height': h,
+                            'x': current_x,
+                            'y': current_y + y_offset,
+                            'rotated': rotated,
+                            # placed_w/h는 절단 알고리즘이 설정 (미리 설정하면 트리밍 절단 생성 안 됨)
+                            'id': len(placed),
+                            'original': (w, h)
+                        })
+
+                        current_x += piece_w + self.kerf
 
             # 다음 행 시작 y 업데이트
             current_y += row['height']
