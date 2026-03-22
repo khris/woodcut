@@ -990,13 +990,38 @@ class RegionBasedPacker(PackingStrategy):
                 else:
                     current_x += (piece_w + self.kerf) * group['count']
 
-                # kerf 포함: 주조각과 trim 조각 사이에 톱날 공간 필요
-                trim_height = row_height - piece_h - self.kerf
+                # kerf 2개: 주조각↔trim 사이 + trim↔영역경계 사이
+                trim_height = row_height - piece_h - 2 * self.kerf
                 if trim_height < 50:
                     continue
 
-                # trim strip: group_start_x ~ plate_width, y: piece_h + kerf ~ row_height
-                trim_width_available = self.plate_width - group_start_x
+                # 같은 행에 "중간 높이" 그룹이 있으면 skip
+                # 앵커(최대 높이)의 H컷은 trim 끝과 정확히 일치하므로 무해하지만,
+                # piece_h < G < row_height - kerf 인 그룹의 H컷은 trim 공간 내부를 관통함
+                if any(
+                    piece_h < (g['original_size'][0] if g['rotated'] else g['original_size'][1]) < row_height - self.kerf
+                    for g in row['groups'] if g is not group
+                ):
+                    continue
+
+                # trim strip: 오른쪽으로 더 키 큰 그룹이 나타나기 전까지 확장
+                # (더 키 큰 그룹은 trim_y 높이까지 조각이 있어서 공간이 막힘)
+                trim_x_end = region['x'] + region['width']
+                scan_x = current_x  # 현재 그룹 다음 위치부터 스캔
+                current_group_idx = row['groups'].index(group)
+                for rg in row['groups'][current_group_idx + 1:]:
+                    rw, rh = rg['original_size']
+                    rrotated = rg['rotated']
+                    rpiece_w = rh if rrotated else rw
+                    rpiece_h = rw if rrotated else rh
+                    if rpiece_h > piece_h:  # 더 키 큰 그룹이 trim 공간을 막음
+                        trim_x_end = scan_x
+                        break
+                    if rg.get('stacked', False):
+                        scan_x += rpiece_w + self.kerf
+                    else:
+                        scan_x += (rpiece_w + self.kerf) * rg['count']
+                trim_width_available = trim_x_end - group_start_x
                 trim_groups: list[dict] = []
 
                 for j in range(i + 1, len(regions)):
