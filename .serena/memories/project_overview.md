@@ -17,10 +17,15 @@
    - 정렬 우선 자유 공간 (빠름, 안정적)
    - 하이브리드 (높이 그룹 + 자유 공간)
    - 유전 알고리즘 (추천, 최적 탐색)
-   - RegionBasedPacker (다중 그룹 영역 배치)
+   - RegionBasedPacker (다중 그룹 영역 배치, 세로 배치 지원)
 
 ## 핵심 알고리즘
-- **RegionBasedPacker**: 다중 그룹 영역 배치 (1:N 매핑), 백트래킹 최적화
+- **RegionBasedPacker**: 
+  - 다중 그룹 영역 배치 (1:N 매핑)
+  - 백트래킹 최적화
+  - **세로 배치(Vertical Stacking)**: 가로 배치가 판재 너비 초과 시 자동으로 조각들을 세로로 쌓음
+    - 조건: `total_width > plate_width and count > 1`
+    - 우선순위: 가로 배치 > 세로 배치 (최후 수단)
 - **2-Phase Cutting**:
   - Phase 1: Trimming Cuts (조각을 정확한 크기로)
   - Phase 2: Separation Cuts (조각 분리)

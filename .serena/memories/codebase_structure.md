@@ -42,8 +42,10 @@ woodcut/
 
 ### 데이터 흐름
 ```
-입력 (pieces) → 그룹화 → 호환 세트 생성 → 백트래킹 영역 할당 → 
-영역 내 배치 → Guillotine Cut 생성 → 시각화 + 검증
+입력 (pieces) → 그룹화 → 회전 옵션 생성 → 
+가로/세로 배치 옵션 평면화 → 백트래킹 영역 할당 → 
+영역 내 배치 (가로 또는 세로) → Guillotine Cut 생성 → 
+시각화 + 검증
 ```
 
 ## 핵심 데이터 구조
@@ -79,5 +81,29 @@ woodcut/
     'width': int,      # 영역 너비
     'height': int,     # 영역 높이
     'pieces': list     # 포함된 조각들
+}
+```
+
+### 그룹 변형 (variant)
+```python
+{
+    'original_size': tuple,  # 원본 크기 (w, h)
+    'count': int,            # 조각 개수
+    'rotated': bool,         # 회전 여부
+    'stacked': bool,         # 세로 배치 여부 (NEW)
+    'height': int,           # 배치 시 실제 높이
+    'width': int,            # 배치 시 실제 너비
+    'total_width': int,      # 전체 너비 (가로) 또는 한 조각 너비 (세로)
+    'area': int              # 총 면적
+}
+```
+
+### 그룹 (group)
+```python
+{
+    'original_size': tuple,  # 원본 크기
+    'rotated': bool,         # 회전 여부
+    'count': int,            # 조각 개수
+    'stacked': bool          # 세로 배치 여부 (NEW)
 }
 ```

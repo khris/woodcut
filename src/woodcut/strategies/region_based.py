@@ -724,11 +724,12 @@ class RegionBasedPacker(PackingStrategy):
                     curr_group['pieces'].append(piece)
 
         groups.append(curr_group)  # 마지막 그룹 추가
-        
-        max_height_in_region = max(g['height'] for g in groups)
-        
+
+        # 세로 배치(stacked) 조각이 있으면 y+h가 region_y보다 훨씬 클 수 있음
+        max_height_in_region = max(g['y'] + g['height'] - region_y for g in groups)
+
         # 3. 영역 상단 자투리 trim (영역 내부 절단선)
-        if abs(max_height_in_region - max_height) > 1:
+        if max_height - max_height_in_region > self.kerf:
             cuts.append({
                 'direction': 'H',
                 'position': region_y + max_height_in_region,
@@ -739,8 +740,65 @@ class RegionBasedPacker(PackingStrategy):
             })
             print(f"  → 영역 상단 trim: y={region_y + max_height_in_region}")
         
-        # 4. 그룹별 인터리브 절단선 생성
+        # 4. 세로 배치(stacked) 컬럼 감지 및 전용 절단선 생성
+        # 동일 x + 동일 너비 + 연속 y = 하나의 세로 컬럼
+        stacked_columns: dict[tuple, list[int]] = {}
+        for idx, g in enumerate(groups):
+            if len(g['pieces']) == 1:
+                p = g['pieces'][0]
+                pw = p['height'] if p.get('rotated') else p['width']
+                stacked_columns.setdefault((p['x'], pw), []).append(idx)
+
+        # 2개 이상 그룹이 같은 컬럼 → stacked
+        stacked_group_indices: set[int] = set()
+        for col_group_indices in stacked_columns.values():
+            if len(col_group_indices) > 1:
+                stacked_group_indices.update(col_group_indices)
+
+        for col_key, col_group_indices in stacked_columns.items():
+            if len(col_group_indices) < 2:
+                continue
+
+            x_start, pw = col_key
+            col_x_end = x_start + pw
+            priority_base = region_priority_base + 20
+
+            # V trim: 컬럼 우측 자투리 (한 번만 생성)
+            region_x_end = region['x'] + region['width']
+            if region_x_end - col_x_end > self.kerf:
+                top_g = groups[col_group_indices[0]]
+                bot_g = groups[col_group_indices[-1]]
+                cuts.append({
+                    'direction': 'V',
+                    'position': col_x_end,
+                    'start': top_g['y'],
+                    'end': bot_g['y'] + bot_g['height'],
+                    'priority': priority_base,
+                    'type': 'right_trim',
+                    'sub_priority': 2
+                })
+                print(f"  → stacked V trim: x={col_x_end}")
+
+            # H 분리: stacked 조각 사이 (V cut 이후에 실행되도록 priority 높임)
+            for i in range(len(col_group_indices) - 1):
+                g = groups[col_group_indices[i]]
+                cut_y = g['y'] + g['height']
+                cuts.append({
+                    'direction': 'H',
+                    'position': cut_y,
+                    'start': x_start,
+                    'end': col_x_end,
+                    'priority': priority_base + 5,
+                    'type': 'stacked_separation',
+                    'sub_priority': 1
+                })
+                print(f"  → stacked H 분리: y={cut_y}, x={x_start}~{col_x_end}")
+
+        # 5. 그룹별 인터리브 절단선 생성 (stacked 그룹 제외)
         for group_idx, group in enumerate(groups):
+            # 세로 배치 컬럼에 속한 그룹은 위에서 처리됨
+            if group_idx in stacked_group_indices:
+                continue
             group_pieces = group['pieces']
             group_h = group['height']
 
@@ -824,7 +882,7 @@ class RegionBasedPacker(PackingStrategy):
                     })
                     print(f"  → 다음 그룹 trim: y={next_y + next_h}, x={boundary_x}~끝")
         
-        # 5. placed_w/h 설정
+        # 6. placed_w/h 설정
         for piece in placed:
             if piece.get('rotated', False):
                 piece['placed_w'] = piece['height']
