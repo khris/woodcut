@@ -40,7 +40,6 @@ class CuttingRequest(BaseModel):
     plate_height: int = 1220
     kerf: int = 5
     allow_rotation: bool = True
-    enable_multi_tier: bool = False
     strategy: str = "region_based"
     pieces: list[PieceInput]
 
@@ -77,7 +76,6 @@ async def calculate_cutting(request: CuttingRequest):
                 request.plate_height,
                 request.kerf,
                 request.allow_rotation,
-                enable_multi_tier=request.enable_multi_tier
             )
         else:
             packer = RegionBasedPacker(
@@ -85,7 +83,6 @@ async def calculate_cutting(request: CuttingRequest):
                 request.plate_height,
                 request.kerf,
                 request.allow_rotation,
-                enable_multi_tier=request.enable_multi_tier
             )
         plates = packer.pack(pieces)
 
