@@ -84,13 +84,19 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
                 print("\n=== 다단 배치 시도 ===")
                 print(f"현재 plate 제외 후 남은 조각: {len(filtered_remaining)}개")
 
-                for region in regions:
+                for i, region in enumerate(regions):
                     # scrap 영역 제외
                     if region['type'] == 'scrap':
                         continue
 
-                    # 남은 공간 탐지
-                    space = self._detect_remaining_space(region)
+                    # 다음 영역의 시작 y (이미 점유된 공간 경계)
+                    next_region_y = self.plate_height
+                    for j in range(i + 1, len(regions)):
+                        next_region_y = regions[j]['y']
+                        break
+
+                    # 남은 공간 탐지 (다음 영역 경계까지만)
+                    space = self._detect_remaining_space(region, next_region_y)
 
                     if space:
                         width, height, y_offset = space

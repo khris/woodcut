@@ -65,13 +65,19 @@ class RegionBasedPacker(PackingStrategy):
             if getattr(self, 'enable_multi_tier', False) and remaining_pieces:
                 print("\n=== 다단 배치 시도 ===")
 
-                for region in regions:
+                for i, region in enumerate(regions):
                     # scrap 영역 제외
                     if region['type'] == 'scrap':
                         continue
 
-                    # 남은 공간 탐지
-                    space = self._detect_remaining_space(region)
+                    # 다음 영역의 시작 y (이미 점유된 공간 경계)
+                    next_region_y = self.plate_height
+                    for j in range(i + 1, len(regions)):
+                        next_region_y = regions[j]['y']
+                        break
+
+                    # 남은 공간 탐지 (다음 영역 경계까지만)
+                    space = self._detect_remaining_space(region, next_region_y)
 
                     if space:
                         width, height, y_offset = space
@@ -893,11 +899,12 @@ class RegionBasedPacker(PackingStrategy):
 
         return placed, cuts
 
-    def _detect_remaining_space(self, region):
+    def _detect_remaining_space(self, region, next_region_y=None):
         """영역의 남은 세로 공간 계산
 
         Args:
             region: 영역 딕셔너리 (rows 구조 사용)
+            next_region_y: 다음 영역의 시작 y (없으면 plate_height 사용)
 
         Returns:
             (width, height, y_offset) or None
@@ -905,9 +912,10 @@ class RegionBasedPacker(PackingStrategy):
         # 첫 행의 높이
         used_height = region['rows'][0]['height']
 
-        # 남은 높이
+        # 남은 높이: 다음 영역 경계까지만 (이미 점유된 공간 침범 방지)
         region_bottom = region['y'] + used_height
-        remaining = self.plate_height - region_bottom
+        upper_bound = next_region_y if next_region_y is not None else self.plate_height
+        remaining = upper_bound - region_bottom - self.kerf
 
         # Threshold 체크 (기본 100mm, __init__에서 설정 가능)
         threshold = getattr(self, 'multi_tier_threshold', 100)
