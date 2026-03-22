@@ -1060,6 +1060,15 @@ class RegionBasedPacker(PackingStrategy):
                         'height': trim_h
                     })
 
+        # 연속된 scrap 영역 병합 (불필요한 경계 절단선 제거)
+        i = 0
+        while i < len(regions) - 1:
+            if regions[i].get('type') == 'scrap' and regions[i + 1].get('type') == 'scrap':
+                regions[i]['height'] += regions[i + 1]['height']
+                regions.pop(i + 1)
+            else:
+                i += 1
+
     def _fill_row_trim_spaces(self, region, remaining_pieces_list):
         """행 내부 trim 공간에 소형 조각 배치 시도
 
