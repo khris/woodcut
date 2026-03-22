@@ -241,6 +241,9 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
             print("\n⚠️  백트래킹 실패")
             return {'pieces': [], 'cuts': [], 'free_spaces': []}, []
 
+        # ★ 영역 간 trim 최적화: 이후 영역 소형 그룹을 이전 영역 trim 공간으로 이동
+        self._optimize_trim_placement(regions)
+
         # 5. 각 영역 내 배치 및 절단선 생성
         plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
 

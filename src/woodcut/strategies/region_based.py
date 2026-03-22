@@ -55,6 +55,10 @@ class RegionBasedPacker(PackingStrategy):
             # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
             regions = self._allocate_anchor_backtrack(all_variants)
 
+            # ★ 영역 간 trim 최적화: 이후 영역 소형 그룹을 이전 영역 trim 공간으로 이동
+            if regions:
+                self._optimize_trim_placement(regions)
+
             # 폴백 전략 사용 여부 판단
             use_fallback = False
             if not regions:
@@ -654,6 +658,8 @@ class RegionBasedPacker(PackingStrategy):
                 mode_str = "세로" if stacked else "가로"
                 print(f"  [행 {row_idx+1}] 그룹 {w}×{h} (회전={rotated}, {mode_str}배치): {count}개 → y={current_y}")
 
+                group_start_x = current_x  # trim_rows 배치 기준점
+
                 if stacked:
                     # 세로 배치: 조각들을 세로로 쌓음
                     for i in range(count):
@@ -695,6 +701,29 @@ class RegionBasedPacker(PackingStrategy):
                         })
 
                         current_x += piece_w + self.kerf
+
+                # 행 내부 trim 공간에 배치된 조각들 (multi-tier trim)
+                for trim_row in group.get('trim_rows', []):
+                    trim_y = current_y + trim_row['y_offset']
+                    trim_x = group_start_x
+                    for trim_group in trim_row['groups']:
+                        tw, th = trim_group['original_size']
+                        trotated = trim_group['rotated']
+                        tpiece_w = th if trotated else tw
+                        tpiece_h = tw if trotated else th
+                        for _ in range(trim_group['count']):
+                            if trim_x + tpiece_w > region['x'] + region['width']:
+                                break
+                            placed.append({
+                                'width': tw,
+                                'height': th,
+                                'x': trim_x,
+                                'y': trim_y,
+                                'rotated': trotated,
+                                'id': len(placed),
+                                'original': (tw, th)
+                            })
+                            trim_x += tpiece_w + self.kerf
 
             # 다음 행 시작 y 업데이트
             current_y += row['height']
@@ -927,6 +956,160 @@ class RegionBasedPacker(PackingStrategy):
             )
 
         return None
+
+    def _optimize_trim_placement(self, regions: list[dict]) -> None:
+        """이후 영역 그룹을 이전 영역 trim 공간으로 재배치 (최적화)
+
+        백트래킹으로 확정된 regions에서 이후 영역의 소형 그룹을
+        이전 영역의 trim 공간으로 이동하여 판재 활용도를 높임.
+        빈 영역은 scrap으로 전환.
+
+        Args:
+            regions: _allocate_anchor_backtrack()의 결과 (in-place 수정)
+        """
+        for i, region in enumerate(regions):
+            if region.get('type') == 'scrap':
+                continue
+
+            row = region['rows'][0]
+            row_height = row['height']
+            current_x = region['x']
+
+            for group in row['groups']:
+                w, h = group['original_size']
+                rotated = group['rotated']
+                piece_w = h if rotated else w
+                piece_h = w if rotated else h
+                stacked = group.get('stacked', False)
+
+                group_start_x = current_x
+
+                # current_x 업데이트 (다음 그룹 시작점 추적)
+                if stacked:
+                    current_x += piece_w + self.kerf
+                else:
+                    current_x += (piece_w + self.kerf) * group['count']
+
+                trim_height = row_height - piece_h
+                if trim_height < 50:
+                    continue
+
+                # trim strip: group_start_x ~ plate_width, y: piece_h ~ row_height
+                trim_width_available = self.plate_width - group_start_x
+                trim_groups: list[dict] = []
+
+                for j in range(i + 1, len(regions)):
+                    later_region = regions[j]
+                    if later_region.get('type') == 'scrap':
+                        continue
+
+                    later_row = later_region['rows'][0]
+                    to_remove: list[dict] = []
+
+                    for later_group in later_row['groups']:
+                        lw, lh = later_group['original_size']
+                        lrotated = later_group['rotated']
+                        lpiece_w = lh if lrotated else lw
+                        lpiece_h = lw if lrotated else lh
+
+                        if lpiece_h > trim_height:
+                            continue
+
+                        max_fit = (trim_width_available + self.kerf) // (lpiece_w + self.kerf)
+                        if max_fit == 0:
+                            continue
+
+                        move_count = min(later_group['count'], max_fit)
+
+                        trim_groups.append({
+                            'original_size': (lw, lh),
+                            'rotated': lrotated,
+                            'count': move_count,
+                        })
+
+                        later_group['count'] -= move_count
+
+                        print(f"  [trim 최적화] {lw}×{lh} × {move_count}개 → R{i+1} trim (y_offset={piece_h}, trim_h={trim_height})")
+
+                        if later_group['count'] == 0:
+                            to_remove.append(later_group)
+
+                        trim_width_available -= move_count * (lpiece_w + self.kerf)
+                        if trim_width_available < 50:
+                            break
+
+                    for g in to_remove:
+                        later_row['groups'].remove(g)
+
+                    # 빈 영역 → scrap으로 전환 (경계 절단선은 유지)
+                    if not later_row['groups']:
+                        later_region['type'] = 'scrap'
+                        later_region['rows'] = [{'groups': [], 'height': 0}]
+
+                    if trim_width_available < 50:
+                        break
+
+                if trim_groups:
+                    trim_h = max(
+                        g['original_size'][0] if g['rotated'] else g['original_size'][1]
+                        for g in trim_groups
+                    )
+                    group.setdefault('trim_rows', []).append({
+                        'y_offset': piece_h,
+                        'groups': trim_groups,
+                        'height': trim_h
+                    })
+
+    def _fill_row_trim_spaces(self, region, remaining_pieces_list):
+        """행 내부 trim 공간에 소형 조각 배치 시도
+
+        높이가 행 높이보다 짧은 그룹 위쪽의 strip 공간에 남은 조각을 배치.
+        trim strip 너비 = 해당 그룹 x 시작점 ~ 판재 끝
+
+        Args:
+            region: 영역 딕셔너리 (rows 구조)
+            remaining_pieces_list: 남은 조각 리스트 (in-place 수정)
+        """
+        row = region['rows'][0]
+        row_height = row['height']
+        current_x = region['x']
+
+        for group in row['groups']:
+            w, h = group['original_size']
+            rotated = group['rotated']
+            piece_w = h if rotated else w
+            piece_h = w if rotated else h
+            stacked = group.get('stacked', False)
+            group_total_w = (piece_w + self.kerf) if stacked else (piece_w + self.kerf) * group['count']
+
+            trim_height = row_height - piece_h
+            # 의미있는 trim 공간 + 남은 조각 있을 때만 시도
+            if trim_height >= 50 and remaining_pieces_list:
+                trim_width = self.plate_width - current_x
+                extra = self._try_add_tier(remaining_pieces_list, trim_width, trim_height)
+                if extra:
+                    group.setdefault('trim_rows', []).append({
+                        'y_offset': piece_h,
+                        'groups': extra['groups'],
+                        'height': extra['height']
+                    })
+                    placed_count = sum(g['count'] for g in extra['groups'])
+                    print(f"  → trim strip 배치: {placed_count}개 조각 (y_offset={piece_h}, trim_h={trim_height})")
+
+                    # 배치된 조각 제거
+                    for trim_group in extra['groups']:
+                        tw, th = trim_group['original_size']
+                        trotated = trim_group['rotated']
+                        size_key = (th, tw) if trotated else (tw, th)
+                        to_remove = trim_group['count']
+                        for piece in list(remaining_pieces_list):
+                            if (piece['width'], piece['height']) == size_key:
+                                remaining_pieces_list.remove(piece)
+                                to_remove -= 1
+                                if to_remove == 0:
+                                    break
+
+            current_x += group_total_w + self.kerf
 
     def _try_add_tier(self, remaining_pieces, width, height):
         """추가 행 배치 시도 (단순 로직)
