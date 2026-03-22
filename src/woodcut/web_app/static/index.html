@@ -3,77 +3,104 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>목재 재단기</title>
+    <title>목재 재단기 — Woodcut Optimizer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="static/style.css">
     <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>목재 재단기</h1>
+            <div class="header-inner">
+                <div class="header-mark">
+                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                        <rect x="2" y="2" width="24" height="24" rx="4" stroke="currentColor" stroke-width="1.5"/>
+                        <line x1="2" y1="10" x2="26" y2="10" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>
+                        <line x1="14" y1="2" x2="14" y2="26" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>
+                        <rect x="3" y="3" width="10" height="6" rx="1" fill="currentColor" opacity="0.15"/>
+                        <rect x="15" y="3" width="8" height="6" rx="1" fill="currentColor" opacity="0.1"/>
+                        <rect x="3" y="12" width="6" height="12" rx="1" fill="currentColor" opacity="0.1"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1>목재 재단기</h1>
+                    <p>Guillotine Cut Optimizer</p>
+                </div>
+            </div>
         </header>
 
         <div class="main-content">
             <!-- 입력 폼 -->
             <div class="input-panel">
-                <h2>재단 설정</h2>
+                <div class="panel-section">
+                    <h2>재단 설정</h2>
 
-                <div class="form-group">
-                    <label for="plateWidth">원판 너비 (mm)</label>
-                    <input type="number" id="plateWidth" value="2440" min="100">
-                </div>
+                    <div class="settings-grid">
+                        <div class="form-group">
+                            <label for="plateWidth">원판 너비 <span class="unit">mm</span></label>
+                            <input type="number" id="plateWidth" value="2440" min="100">
+                        </div>
 
-                <div class="form-group">
-                    <label for="plateHeight">원판 높이 (mm)</label>
-                    <input type="number" id="plateHeight" value="1220" min="100">
-                </div>
+                        <div class="form-group">
+                            <label for="plateHeight">원판 높이 <span class="unit">mm</span></label>
+                            <input type="number" id="plateHeight" value="1220" min="100">
+                        </div>
 
-                <div class="form-group">
-                    <label for="kerf">톱날 두께 (mm)</label>
-                    <input type="number" id="kerf" value="5" min="0">
-                </div>
+                        <div class="form-group">
+                            <label for="kerf">톱날 두께 <span class="unit">mm</span></label>
+                            <input type="number" id="kerf" value="5" min="0">
+                        </div>
+                    </div>
 
-                <div class="form-group">
-                    <label>
-                        <input type="checkbox" id="allowRotation" checked>
-                        조각 회전 허용
-                    </label>
-                </div>
+                    <div class="form-group form-group--toggle">
+                        <label>
+                            <input type="checkbox" id="allowRotation" checked>
+                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                            <span class="toggle-label">조각 회전 허용</span>
+                        </label>
+                    </div>
 
-
-                <div class="form-group">
-                    <label for="strategySelect">패킹 전략</label>
-                    <select id="strategySelect">
-                        <option value="region_based">Region Based (기본)</option>
-                        <option value="region_based_split">Region Based with Split (그룹 분할, 무한 루프 방지)</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label for="presetSelect">프리셋 불러오기</label>
-                    <div class="preset-controls">
-                        <select id="presetSelect" onchange="loadPreset(this.value)">
-                            <option value="">-- 프리셋 선택 --</option>
-                            <optgroup label="기본 프리셋">
-                                <option value="basic">기본 예제 (다양한 크기)</option>
-                                <option value="cabinet">수납장 (일관된 높이)</option>
-                                <option value="shelf">선반 (긴 조각 위주)</option>
-                            </optgroup>
-                            <optgroup id="userPresetsGroup" label="사용자 프리셋">
-                                <!-- 사용자 프리셋이 여기에 추가됨 -->
-                            </optgroup>
+                    <div class="form-group">
+                        <label for="strategySelect">패킹 전략</label>
+                        <select id="strategySelect">
+                            <option value="region_based">Region Based (기본)</option>
+                            <option value="region_based_split">Region Based with Split (그룹 분할)</option>
                         </select>
-                        <button class="btn-save-preset" onclick="saveCurrentAsPreset()" title="현재 조각들을 프리셋으로 저장">💾 저장</button>
-                        <button class="btn-delete-preset" onclick="deleteCurrentPreset()" title="선택된 사용자 프리셋 삭제">🗑️ 삭제</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="presetSelect">프리셋 불러오기</label>
+                        <div class="preset-controls">
+                            <select id="presetSelect" onchange="loadPreset(this.value)">
+                                <option value="">프리셋 선택</option>
+                                <optgroup label="기본 프리셋">
+                                    <option value="basic">기본 예제 (다양한 크기)</option>
+                                    <option value="cabinet">수납장 (일관된 높이)</option>
+                                    <option value="shelf">선반 (긴 조각 위주)</option>
+                                </optgroup>
+                                <optgroup id="userPresetsGroup" label="사용자 프리셋">
+                                </optgroup>
+                            </select>
+                            <button class="btn-save-preset" onclick="saveCurrentAsPreset()" title="현재 조각들을 프리셋으로 저장">저장</button>
+                            <button class="btn-delete-preset" onclick="deleteCurrentPreset()" title="선택된 사용자 프리셋 삭제">삭제</button>
+                        </div>
                     </div>
                 </div>
 
-                <h3>조각 목록</h3>
-                <div id="piecesList">
-                    <!-- 사용자 입력 대기 -->
+                <div class="panel-section">
+                    <h3>조각 목록</h3>
+                    <div id="piecesList">
+                        <!-- 사용자 입력 대기 -->
+                    </div>
+
+                    <button class="btn-add" onclick="addPiece()">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+                        조각 추가
+                    </button>
                 </div>
 
-                <button class="btn-add" onclick="addPiece()">+ 조각 추가</button>
                 <button class="btn-calculate" onclick="calculateCutting()">재단 계획 생성</button>
 
                 <div id="status" class="status"></div>
@@ -86,6 +113,10 @@
                 <div id="visualization" class="visualization"></div>
             </div>
         </div>
+
+        <footer>
+            <p>Woodcut — Guillotine Cut Optimization Tool</p>
+        </footer>
     </div>
 
     <script src="static/app.js"></script>
