@@ -990,11 +990,12 @@ class RegionBasedPacker(PackingStrategy):
                 else:
                     current_x += (piece_w + self.kerf) * group['count']
 
-                trim_height = row_height - piece_h
+                # kerf 포함: 주조각과 trim 조각 사이에 톱날 공간 필요
+                trim_height = row_height - piece_h - self.kerf
                 if trim_height < 50:
                     continue
 
-                # trim strip: group_start_x ~ plate_width, y: piece_h ~ row_height
+                # trim strip: group_start_x ~ plate_width, y: piece_h + kerf ~ row_height
                 trim_width_available = self.plate_width - group_start_x
                 trim_groups: list[dict] = []
 
@@ -1029,7 +1030,7 @@ class RegionBasedPacker(PackingStrategy):
 
                         later_group['count'] -= move_count
 
-                        print(f"  [trim 최적화] {lw}×{lh} × {move_count}개 → R{i+1} trim (y_offset={piece_h}, trim_h={trim_height})")
+                        print(f"  [trim 최적화] {lw}×{lh} × {move_count}개 → R{i+1} trim (y_offset={piece_h + self.kerf}, trim_h={trim_height})")
 
                         if later_group['count'] == 0:
                             to_remove.append(later_group)
@@ -1055,7 +1056,7 @@ class RegionBasedPacker(PackingStrategy):
                         for g in trim_groups
                     )
                     group.setdefault('trim_rows', []).append({
-                        'y_offset': piece_h,
+                        'y_offset': piece_h + self.kerf,
                         'groups': trim_groups,
                         'height': trim_h
                     })
