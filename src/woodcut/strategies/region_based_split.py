@@ -17,9 +17,8 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
     - 무한 루프 방지: 분할 후에도 배치 실패 시 즉시 중단
     """
 
-    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True,
-                 enable_multi_tier: bool = False, multi_tier_threshold: int = 100) -> None:
-        super().__init__(plate_width, plate_height, kerf, allow_rotation, enable_multi_tier, multi_tier_threshold)
+    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
+        super().__init__(plate_width, plate_height, kerf, allow_rotation)
 
     def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
         """다중 그룹 영역 배치 패킹 (그룹 분할 지원)"""
@@ -64,120 +63,6 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
                     if len(remaining_pieces) > 3:
                         print(f"  ... 외 {len(remaining_pieces) - 3}개")
                     break
-
-            # ★ Multi-Tier 옵션이 켜진 경우 (배치 성공 후)
-            if self.enable_multi_tier and remaining_pieces and len(plate['pieces']) > 0 and regions:
-                # 다단 배치 전에 현재 plate의 조각들을 제거 (임시)
-                placed_in_plate = {}
-                for p in plate['pieces']:
-                    size_key = (p['width'], p['height'])
-                    placed_in_plate[size_key] = placed_in_plate.get(size_key, 0) + 1
-
-                filtered_remaining = []
-                for piece in remaining_pieces:
-                    size_key = (piece['width'], piece['height'])
-                    if size_key in placed_in_plate and placed_in_plate[size_key] > 0:
-                        placed_in_plate[size_key] -= 1
-                    else:
-                        filtered_remaining.append(piece)
-
-                print("\n=== 다단 배치 시도 ===")
-                print(f"현재 plate 제외 후 남은 조각: {len(filtered_remaining)}개")
-
-                for i, region in enumerate(regions):
-                    # scrap 영역 제외
-                    if region['type'] == 'scrap':
-                        continue
-
-                    # 다음 영역의 시작 y (이미 점유된 공간 경계)
-                    next_region_y = self.plate_height
-                    for j in range(i + 1, len(regions)):
-                        next_region_y = regions[j]['y']
-                        break
-
-                    # 남은 공간 탐지 (다음 영역 경계까지만)
-                    space = self._detect_remaining_space(region, next_region_y)
-
-                    if space:
-                        width, height, y_offset = space
-                        existing_h = region['rows'][0]['height']
-
-                        print(f"영역 {region.get('id', '?')}: 남은 {height}mm 탐지")
-
-                        # 추가 행 시도 (현재 plate 제외한 조각들로)
-                        extra_row = self._try_add_tier(
-                            filtered_remaining,
-                            width,
-                            height
-                        )
-
-                        if extra_row:
-                            # 추가 행 배치
-                            region['rows'].append(extra_row)
-                            region['height'] += extra_row['height']
-
-                            # 추가 행 정보 로깅
-                            placed_count = sum(g['count'] for g in extra_row['groups'])
-                            print(f"  → 추가 행 추가: {placed_count}개 조각 (제거는 나중에)")
-
-                            # 영역 전체를 다시 배치 (추가 행 포함)
-                            region_idx = regions.index(region)
-                            placed_new, cuts_new = self._pack_multi_group_region(
-                                region,
-                                region.get('id', f'R{region_idx+1}'),
-                                region_index=region_idx,
-                                is_first_region=(region_idx == 0),
-                                is_last_region=(region_idx == len(regions) - 1),
-                                region_priority_base=region_idx * 100
-                            )
-                            
-                            if placed_new:
-                                # 기존 plate의 이 영역 조각들을 교체
-                                # (간단하게: plate를 다시 생성)
-                                plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
-                                all_cuts = []
-                                
-                                for i, r in enumerate(regions):
-                                    r['id'] = f'R{i+1}'
-                                    placed_r, cuts_r = self._pack_multi_group_region(
-                                        r,
-                                        r['id'],
-                                        region_index=i,
-                                        is_first_region=(i == 0),
-                                        is_last_region=(i == len(regions) - 1),
-                                        region_priority_base=i * 100
-                                    )
-                                    if placed_r:
-                                        plate['pieces'].extend(placed_r)
-                                    if cuts_r:
-                                        for cut in cuts_r:
-                                            cut['region_index'] = i
-                                        all_cuts.extend(cuts_r)
-                                
-                                # 절단선 정렬
-                                def sort_key(cut):
-                                    priority = cut.get('priority', 100)
-                                    region_idx = cut.get('region_index', 0)
-                                    sub_priority = cut.get('sub_priority', 0)
-                                    position = cut.get('position', 0)
-                                    if priority == 1:
-                                        return (priority, position, 0, 0)
-                                    else:
-                                        return (priority, region_idx, sub_priority, position)
-                                
-                                all_cuts.sort(key=sort_key)
-                                for idx, cut in enumerate(all_cuts):
-                                    cut['order'] = idx + 1
-                                    if 'region_x' not in cut:
-                                        cut['region_x'] = 0
-                                        cut['region_y'] = 0
-                                        cut['region_w'] = self.plate_width
-                                        cut['region_h'] = self.plate_height
-                                plate['cuts'] = all_cuts
-                                
-                                break  # 한 영역에만 추가 행 배치
-                        else:
-                            print(f"  → 조건 불충족, 스킵")
 
             print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 완료 ===")
             print(f"  배치된 조각: {len(plate['pieces'])}개")

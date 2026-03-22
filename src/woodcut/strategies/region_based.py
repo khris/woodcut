@@ -21,11 +21,8 @@ class RegionBasedPacker(PackingStrategy):
     - 작업 편의성: 같은 높이/너비 조각들이 그룹화
     """
 
-    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True,
-                 enable_multi_tier: bool = False, multi_tier_threshold: int = 100) -> None:
+    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
         super().__init__(plate_width, plate_height, kerf, allow_rotation)
-        self.enable_multi_tier = enable_multi_tier
-        self.multi_tier_threshold = multi_tier_threshold
 
     def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
         """다중 그룹 영역 배치 패킹 (재설계)"""
@@ -64,64 +61,6 @@ class RegionBasedPacker(PackingStrategy):
             if not regions:
                 print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
                 use_fallback = True
-
-            # ★ Multi-Tier 옵션이 켜진 경우
-            if getattr(self, 'enable_multi_tier', False) and remaining_pieces:
-                print("\n=== 다단 배치 시도 ===")
-
-                for i, region in enumerate(regions):
-                    # scrap 영역 제외
-                    if region['type'] == 'scrap':
-                        continue
-
-                    # 다음 영역의 시작 y (이미 점유된 공간 경계)
-                    next_region_y = self.plate_height
-                    for j in range(i + 1, len(regions)):
-                        next_region_y = regions[j]['y']
-                        break
-
-                    # 남은 공간 탐지 (다음 영역 경계까지만)
-                    space = self._detect_remaining_space(region, next_region_y)
-
-                    if space:
-                        width, height, y_offset = space
-                        existing_h = region['rows'][0]['height']
-
-                        print(f"영역 {region.get('id', '?')}: 남은 {height}mm 탐지")
-
-                        # 추가 행 시도
-                        extra_row = self._try_add_tier(
-                            remaining_pieces,
-                            width,
-                            height
-                        )
-
-                        if extra_row:
-                            # 추가 행 배치
-                            region['rows'].append(extra_row)
-                            region['height'] += extra_row['height']
-
-                            # remaining_pieces 업데이트
-                            placed_count = sum(
-                                g['count'] for g in extra_row['groups']
-                            )
-                            print(f"  → 추가 행 배치: {placed_count}개 조각")
-
-                            # 배치된 조각 제거
-                            for group in extra_row['groups']:
-                                w, h = group['original_size']
-                                rotated = group['rotated']
-                                size_key = (h, w) if rotated else (w, h)
-                                to_remove = group['count']
-
-                                for piece in list(remaining_pieces):
-                                    if (piece['width'], piece['height']) == size_key:
-                                        remaining_pieces.remove(piece)
-                                        to_remove -= 1
-                                        if to_remove == 0:
-                                            break
-                        else:
-                            print(f"  → 조건 불충족, 스킵")
 
             # 5. 폴백 또는 일반 배치
             if use_fallback:
@@ -774,7 +713,35 @@ class RegionBasedPacker(PackingStrategy):
                 'type': 'region_trim'
             })
             print(f"  → 영역 상단 trim: y={region_y + max_height_in_region}")
-        
+
+        # 3b. 2차 행 자투리 trim (trim_rows로 배치된 그룹이 max_height 미만일 때)
+        # 예: trim 조각(h=50)이 y=355에 있고 max_height=450이면 H@405 필요
+        # H컷 범위는 해당 행 조각의 실제 x 범위로 제한 (인접 컬럼 침범 방지)
+        secondary_rows: dict[int, tuple[int, int, int]] = {}  # {row_y: (max_h, min_x, max_x)}
+        for g in groups:
+            if g['y'] > region_y:
+                row_y = g['y']
+                g_x_start = min(p['x'] for p in g['pieces'])
+                g_x_end = max(p['x'] + (p['height'] if p.get('rotated') else p['width']) for p in g['pieces'])
+                if row_y in secondary_rows:
+                    prev_h, prev_x0, prev_x1 = secondary_rows[row_y]
+                    secondary_rows[row_y] = (max(prev_h, g['height']), min(prev_x0, g_x_start), max(prev_x1, g_x_end))
+                else:
+                    secondary_rows[row_y] = (g['height'], g_x_start, g_x_end)
+        for row_y, (row_h, x_start, x_end) in secondary_rows.items():
+            row_end = row_y + row_h
+            if row_end < region_y + max_height - self.kerf:
+                # x_end는 region 끝까지 — 이 컷이 적용되는 서브영역의 전체 폭을 커버해야 함
+                cuts.append({
+                    'direction': 'H',
+                    'position': row_end,
+                    'start': x_start,
+                    'end': region['x'] + region['width'],
+                    'priority': region_priority_base + 23,
+                    'type': 'secondary_row_trim'
+                })
+                print(f"  → 2차 행 trim: y={row_end}, x={x_start}~{region['x'] + region['width']}")
+
         # 4. 세로 배치(stacked) 컬럼 감지 및 전용 절단선 생성
         # 동일 x + 동일 너비 + 연속 y = 하나의 세로 컬럼
         stacked_columns: dict[tuple, list[int]] = {}
@@ -928,35 +895,6 @@ class RegionBasedPacker(PackingStrategy):
 
         return placed, cuts
 
-    def _detect_remaining_space(self, region, next_region_y=None):
-        """영역의 남은 세로 공간 계산
-
-        Args:
-            region: 영역 딕셔너리 (rows 구조 사용)
-            next_region_y: 다음 영역의 시작 y (없으면 plate_height 사용)
-
-        Returns:
-            (width, height, y_offset) or None
-        """
-        # 첫 행의 높이
-        used_height = region['rows'][0]['height']
-
-        # 남은 높이: 다음 영역 경계까지만 (이미 점유된 공간 침범 방지)
-        region_bottom = region['y'] + used_height
-        upper_bound = next_region_y if next_region_y is not None else self.plate_height
-        remaining = upper_bound - region_bottom - self.kerf
-
-        # Threshold 체크 (기본 100mm, __init__에서 설정 가능)
-        threshold = getattr(self, 'multi_tier_threshold', 100)
-        if remaining > threshold:
-            return (
-                region['width'],
-                remaining,
-                region_bottom
-            )
-
-        return None
-
     def _optimize_trim_placement(self, regions: list[dict]) -> None:
         """이후 영역 그룹을 이전 영역 trim 공간으로 재배치 (최적화)
 
@@ -1094,108 +1032,6 @@ class RegionBasedPacker(PackingStrategy):
                 regions.pop(i + 1)
             else:
                 i += 1
-
-    def _fill_row_trim_spaces(self, region, remaining_pieces_list):
-        """행 내부 trim 공간에 소형 조각 배치 시도
-
-        높이가 행 높이보다 짧은 그룹 위쪽의 strip 공간에 남은 조각을 배치.
-        trim strip 너비 = 해당 그룹 x 시작점 ~ 판재 끝
-
-        Args:
-            region: 영역 딕셔너리 (rows 구조)
-            remaining_pieces_list: 남은 조각 리스트 (in-place 수정)
-        """
-        row = region['rows'][0]
-        row_height = row['height']
-        current_x = region['x']
-
-        for group in row['groups']:
-            w, h = group['original_size']
-            rotated = group['rotated']
-            piece_w = h if rotated else w
-            piece_h = w if rotated else h
-            stacked = group.get('stacked', False)
-            group_total_w = (piece_w + self.kerf) if stacked else (piece_w + self.kerf) * group['count']
-
-            trim_height = row_height - piece_h
-            # 의미있는 trim 공간 + 남은 조각 있을 때만 시도
-            if trim_height >= 50 and remaining_pieces_list:
-                trim_width = self.plate_width - current_x
-                extra = self._try_add_tier(remaining_pieces_list, trim_width, trim_height)
-                if extra:
-                    group.setdefault('trim_rows', []).append({
-                        'y_offset': piece_h,
-                        'groups': extra['groups'],
-                        'height': extra['height']
-                    })
-                    placed_count = sum(g['count'] for g in extra['groups'])
-                    print(f"  → trim strip 배치: {placed_count}개 조각 (y_offset={piece_h}, trim_h={trim_height})")
-
-                    # 배치된 조각 제거
-                    for trim_group in extra['groups']:
-                        tw, th = trim_group['original_size']
-                        trotated = trim_group['rotated']
-                        size_key = (th, tw) if trotated else (tw, th)
-                        to_remove = trim_group['count']
-                        for piece in list(remaining_pieces_list):
-                            if (piece['width'], piece['height']) == size_key:
-                                remaining_pieces_list.remove(piece)
-                                to_remove -= 1
-                                if to_remove == 0:
-                                    break
-
-            current_x += group_total_w + self.kerf
-
-    def _try_add_tier(self, remaining_pieces, width, height):
-        """추가 행 배치 시도 (단순 로직)
-
-        Args:
-            remaining_pieces: 남은 조각들
-            width: 가용 너비
-            height: 가용 높이
-
-        Returns:
-            {'groups': [...], 'height': ...} or None
-        """
-        # 조건: 높이가 남은 공간에 들어가는 조각만
-        candidates = [
-            p for p in remaining_pieces
-            if p['height'] <= height
-        ]
-
-        if not candidates:
-            return None
-
-        # 그룹화
-        groups = self._group_by_exact_size(candidates)
-
-        # 첫 번째 그룹 시도 (크기 순 정렬됨)
-        for group in groups:
-            w, h = group['size']
-            count = group['count']
-
-            # 한 행에 들어갈 수 있는 최대 개수
-            max_count = (width + self.kerf) // (w + self.kerf)
-            actual_count = min(count, max_count)
-
-            if actual_count > 0:
-                return {
-                    'groups': [{'original_size': (w, h), 'rotated': False, 'count': actual_count}],
-                    'height': h + self.kerf
-                }
-
-            # 회전 옵션 시도
-            if self.allow_rotation:
-                max_rotated = (width + self.kerf) // (h + self.kerf)
-                actual_rotated = min(count, max_rotated)
-
-                if actual_rotated > 0 and w <= height:
-                    return {
-                        'groups': [{'original_size': (w, h), 'rotated': True, 'count': actual_rotated}],
-                        'height': w + self.kerf
-                    }
-
-        return None
 
     def _allocate_mixed_regions(self, height_clusters, width_clusters, strategy='horizontal_first'):
         """높이 기반 + 너비 기반 클러스터를 혼합하여 영역 할당
