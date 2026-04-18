@@ -1,296 +1,293 @@
-// Pyodide 초기화
+// ════════════════════════════════════════════════════════════════
+// Woodcut — Precision (CAD / Technical Drawing) front-end
+// Pyodide·프리셋·계산 로직은 유지. 렌더링만 state 기반으로 전환.
+// ════════════════════════════════════════════════════════════════
+
+const USER_PRESETS_KEY = 'woodcut_user_presets';
+
+const PRESETS = {
+    basic:   [[800, 310, 2], [644, 310, 3], [371, 270, 4], [369, 640, 2]],
+    cabinet: [[600, 400, 4], [560, 380, 2], [595, 395, 2]],
+    shelf:   [[1800, 300, 2], [800, 300, 5], [1800, 800, 1]],
+};
+
 let pyodide = null;
 let packerReady = false;
 
-// 원판 상태 관리
 let stocks = [];
+let pieces = [];
+let lastResult = null;  // {data, kerf}
 
-function addStockRow(width = 2440, height = 1220, count = 1) {
-    stocks.push({
-        id: Date.now() + Math.random(),
-        width, height, count
-    });
-    renderStocks();
+// ─────────────────────────────────────────────
+// Title block — Drawing No. (오늘 날짜)
+// ─────────────────────────────────────────────
+(function initTitleblock() {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const el = document.getElementById('drawingNo');
+    if (el) el.textContent = `WC-${yyyy}-${mm}-${dd}`;
+})();
+
+// ─────────────────────────────────────────────
+// Status
+// ─────────────────────────────────────────────
+function setStatus(message, cls = '') {
+    const s = document.getElementById('status');
+    s.textContent = message;
+    s.className = 'status ' + cls;
+}
+// 기존 API 호환용 alias
+function showStatus(message, type) {
+    const map = { loading: '', success: 'ready', error: 'error' };
+    setStatus(message, map[type] ?? '');
 }
 
+// ─────────────────────────────────────────────
+// Rotation toggle (segmented)
+// ─────────────────────────────────────────────
+(function initRotationToggle() {
+    const wrap = document.getElementById('rotationToggle');
+    const input = document.getElementById('allowRotation');
+    wrap.addEventListener('click', (e) => {
+        e.preventDefault();
+        input.checked = !input.checked;
+        wrap.dataset.on = input.checked ? 'true' : 'false';
+    });
+})();
+
+// ─────────────────────────────────────────────
+// Stocks
+// ─────────────────────────────────────────────
+function addStockRow(width = 2440, height = 1220, count = 1) {
+    stocks.push({ id: Date.now() + Math.random(), width, height, count });
+    renderStocks();
+}
 function removeStockRow(id) {
     stocks = stocks.filter(s => s.id !== id);
     renderStocks();
 }
-
 function renderStocks() {
     const list = document.getElementById('stocksList');
     list.innerHTML = '';
-    stocks.forEach(s => {
+    stocks.forEach((s, i) => {
         const row = document.createElement('div');
-        row.className = 'stock-row';
+        row.className = 'row';
         row.innerHTML = `
-            <input type="number" class="stock-width" min="1" value="${s.width}" placeholder="너비">
-            <span>×</span>
-            <input type="number" class="stock-height" min="1" value="${s.height}" placeholder="높이">
-            <span>×</span>
-            <input type="number" class="stock-count" min="1" value="${s.count}" placeholder="수량">
-            <button class="btn-remove" aria-label="삭제">✕</button>
+            <span class="idx mono">S${String(i + 1).padStart(2, '0')}</span>
+            <input type="number" value="${s.width}"  min="1" data-k="width"  aria-label="너비" />
+            <span class="x">×</span>
+            <input type="number" value="${s.height}" min="1" data-k="height" aria-label="높이" />
+            <span class="x">·</span>
+            <input type="number" value="${s.count}"  min="1" data-k="count"  aria-label="수량" />
+            <button class="rm" aria-label="삭제">✕</button>
         `;
-        row.querySelector('.stock-width').addEventListener('input', e => s.width = parseInt(e.target.value) || 0);
-        row.querySelector('.stock-height').addEventListener('input', e => s.height = parseInt(e.target.value) || 0);
-        row.querySelector('.stock-count').addEventListener('input', e => s.count = parseInt(e.target.value) || 0);
-        row.querySelector('.btn-remove').addEventListener('click', () => removeStockRow(s.id));
+        row.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('input', e => {
+                s[e.target.dataset.k] = parseInt(e.target.value) || 0;
+            });
+        });
+        row.querySelector('.rm').addEventListener('click', () => removeStockRow(s.id));
         list.appendChild(row);
     });
+    const tag = document.getElementById('stockCountTag');
+    tag.textContent = `${String(stocks.length).padStart(2, '0')} ITEM${stocks.length === 1 ? '' : 'S'}`;
 }
 
-// Pyodide 로드 및 초기화
-async function initPyodide() {
-    showStatus('Python 환경 로딩 중...', 'loading');
-
-    try {
-        // Pyodide 로드
-        pyodide = await loadPyodide();
-
-        // 1. 기본 클래스 로드 (packing.py)
-        const packingResponse = await fetch(`static/packing.py?v=${Date.now()}`);
-        const packingCode = await packingResponse.text();
-        await pyodide.runPythonAsync(packingCode);
-
-        // 2. RegionBasedPacker 로드 (region_based.py)
-        const regionResponse = await fetch(`static/region_based.py?v=${Date.now()}`);
-        let regionCode = await regionResponse.text();
-
-        // import 문 제거 (이미 로드됨)
-        regionCode = regionCode.replace(/from __future__ import annotations\n/g, '');
-        regionCode = regionCode.replace(/from \.\.packing import[^\n]*\n/g, '');
-
-        await pyodide.runPythonAsync(regionCode);
-
-        // 3. RegionBasedPackerWithSplit 로드 (region_based_split.py)
-        const splitResponse = await fetch(`static/region_based_split.py?v=${Date.now()}`);
-        let splitCode = await splitResponse.text();
-
-        // import 문 제거 (이미 로드됨)
-        splitCode = splitCode.replace(/from __future__ import annotations\n/g, '');
-        splitCode = splitCode.replace(/from \.region_based import[^\n]*\n/g, '');
-
-        await pyodide.runPythonAsync(splitCode);
-
-        packerReady = true;
-        showStatus('준비 완료', 'success');
-
-    } catch (error) {
-        console.error('Pyodide 초기화 실패:', error);
-        showStatus(`초기화 실패: ${error.message}`, 'error');
-    }
+// ─────────────────────────────────────────────
+// Pieces
+// ─────────────────────────────────────────────
+function addPiece(width = '', height = '', count = 1) {
+    pieces.push({ id: Date.now() + Math.random(), width, height, count });
+    renderPieces();
+    // 포커스를 새 행 첫 입력으로
+    requestAnimationFrame(() => {
+        const list = document.getElementById('piecesList');
+        const last = list.lastElementChild;
+        last?.querySelector('input[data-k="width"]')?.focus();
+    });
+}
+function removePiece(id) {
+    pieces = pieces.filter(p => p.id !== id);
+    renderPieces();
+}
+function renderPieces() {
+    const list = document.getElementById('piecesList');
+    list.innerHTML = '';
+    pieces.forEach((p, i) => {
+        const row = document.createElement('div');
+        row.className = 'row';
+        row.innerHTML = `
+            <span class="idx mono">P${String(i + 1).padStart(2, '0')}</span>
+            <input type="number" value="${p.width  ?? ''}" min="1" placeholder="W" data-k="width"  />
+            <span class="x">×</span>
+            <input type="number" value="${p.height ?? ''}" min="1" placeholder="H" data-k="height" />
+            <span class="x">·</span>
+            <input type="number" value="${p.count  ?? ''}" min="1" data-k="count" />
+            <button class="rm" aria-label="삭제">✕</button>
+        `;
+        row.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('input', e => {
+                const val = parseInt(e.target.value);
+                p[e.target.dataset.k] = Number.isFinite(val) ? val : '';
+                if (e.target.dataset.k === 'count') updatePieceTag();
+            });
+        });
+        row.querySelector('.rm').addEventListener('click', () => removePiece(p.id));
+        list.appendChild(row);
+    });
+    updatePieceTag();
+}
+function updatePieceTag() {
+    const total = pieces.reduce((s, p) => s + (parseInt(p.count) || 0), 0);
+    document.getElementById('pieceCountTag').textContent =
+        `${String(pieces.length).padStart(2, '0')} TYPE · ${String(total).padStart(2, '0')} PCS`;
 }
 
-// 페이지 로드 시 Pyodide 초기화 및 사용자 프리셋 로드
-window.addEventListener('DOMContentLoaded', () => {
-    initPyodide();
-    loadUserPresets();
-    document.getElementById('addStockBtn').addEventListener('click', () => addStockRow());
-    addStockRow();  // 기본 1행 (2440×1220 1장)
-});
-
-// 프리셋 데이터
-const PRESETS = {
-    'basic': [
-        [800, 310, 2],
-        [644, 310, 3],
-        [371, 270, 4],
-        [369, 640, 2]
-    ],
-    'cabinet': [
-        [600, 400, 4], // 측판, 천판, 지판
-        [560, 380, 2], // 선반
-        [595, 395, 2]  // 문짝
-    ],
-    'shelf': [
-        [1800, 300, 2], // 긴 기둥
-        [800, 300, 5],  // 선반판
-        [1800, 800, 1]  // 뒷판
-    ]
-};
-
-// 프리셋 로드
+// ─────────────────────────────────────────────
+// Presets (기존 로직 유지 · state 반영)
+// ─────────────────────────────────────────────
 function loadPreset(presetId) {
     if (!presetId) return;
-    
-    let pieces;
-    if (PRESETS[presetId]) {
-        pieces = PRESETS[presetId];
-    } else {
-        const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
-        if (userPresets[presetId]) {
-            pieces = userPresets[presetId];
-        }
-    }
 
-    if (!pieces) return;
-    
-    const piecesList = document.getElementById('piecesList');
-    piecesList.innerHTML = ''; // 기존 목록 초기화
-    
-    pieces.forEach(p => {
-        const newRow = document.createElement('div');
-        newRow.className = 'piece-row';
-        newRow.innerHTML = `
-            <input type="number" class="piece-width" value="${p[0]}" min="1" placeholder="너비">
-            <span>×</span>
-            <input type="number" class="piece-height" value="${p[1]}" min="1" placeholder="높이">
-            <span>×</span>
-            <input type="number" class="piece-count" value="${p[2]}" min="1" placeholder="개수">
-            <button class="btn-remove" onclick="removePiece(this)">✕</button>
-        `;
-        piecesList.appendChild(newRow);
-    });
-    
+    let data = PRESETS[presetId];
+    if (!data) {
+        const user = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+        data = user[presetId];
+    }
+    if (!data) return;
+
+    pieces = data.map(([w, h, c]) => ({
+        id: Date.now() + Math.random(),
+        width: w, height: h, count: c,
+    }));
+    renderPieces();
     showStatus(`프리셋 '${presetId}' 로드 완료`, 'success');
 }
 
-const USER_PRESETS_KEY = 'woodcut_user_presets';
-
-// 사용자 프리셋 로드 및 드롭다운 갱신
 function loadUserPresets() {
-    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    const user = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
     const group = document.getElementById('userPresetsGroup');
     group.innerHTML = '';
-    
-    Object.keys(userPresets).forEach(name => {
-        const option = document.createElement('option');
-        option.value = name;
-        option.textContent = name;
-        group.appendChild(option);
+    Object.keys(user).forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        group.appendChild(opt);
     });
 }
 
-// 현재 설정을 프리셋으로 저장
 function saveCurrentAsPreset() {
-    const pieces = [];
-    const rows = document.querySelectorAll('.piece-row');
-    
-    rows.forEach(row => {
-        const w = parseInt(row.querySelector('.piece-width').value);
-        const h = parseInt(row.querySelector('.piece-height').value);
-        const c = parseInt(row.querySelector('.piece-count').value);
-        
-        if (w > 0 && h > 0 && c > 0) {
-            pieces.push([w, h, c]);
-        }
-    });
+    const data = pieces
+        .filter(p => p.width > 0 && p.height > 0 && p.count > 0)
+        .map(p => [p.width, p.height, p.count]);
 
-    if (pieces.length === 0) {
+    if (data.length === 0) {
         alert('저장할 조각 정보가 없습니다.');
         return;
     }
 
-    const presetName = prompt('프리셋 이름을 입력하세요:');
-    if (!presetName) return;
+    const name = prompt('프리셋 이름을 입력하세요:');
+    if (!name) return;
 
-    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
-    userPresets[presetName] = pieces;
-    localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(userPresets));
+    const user = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    user[name] = data;
+    localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(user));
 
     loadUserPresets();
-    document.getElementById('presetSelect').value = presetName;
-    showStatus(`프리셋 '${presetName}' 저장 완료`, 'success');
+    document.getElementById('presetSelect').value = name;
+    showStatus(`프리셋 '${name}' 저장 완료`, 'success');
 }
 
-// 현재 선택된 사용자 프리셋 삭제
 function deleteCurrentPreset() {
     const select = document.getElementById('presetSelect');
-    const presetName = select.value;
-    
-    if (!presetName) return;
-    if (PRESETS[presetName]) {
+    const name = select.value;
+    if (!name) return;
+    if (PRESETS[name]) {
         alert('기본 프리셋은 삭제할 수 없습니다.');
         return;
     }
+    if (!confirm(`프리셋 '${name}'을(를) 삭제하시겠습니까?`)) return;
 
-    if (!confirm(`프리셋 '${presetName}'을(를) 삭제하시겠습니까?`)) {
-        return;
-    }
-
-    const userPresets = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
-    if (userPresets[presetName]) {
-        delete userPresets[presetName];
-        localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(userPresets));
+    const user = JSON.parse(localStorage.getItem(USER_PRESETS_KEY) || '{}');
+    if (user[name]) {
+        delete user[name];
+        localStorage.setItem(USER_PRESETS_KEY, JSON.stringify(user));
         loadUserPresets();
         select.value = '';
-        showStatus(`프리셋 '${presetName}' 삭제 완료`, 'success');
+        showStatus(`프리셋 '${name}' 삭제 완료`, 'success');
     }
 }
 
-// 조각 추가
-function addPiece() {
-    const piecesList = document.getElementById('piecesList');
-    const newRow = document.createElement('div');
-    newRow.className = 'piece-row';
-    newRow.innerHTML = `
-        <input type="number" class="piece-width" min="1" placeholder="너비">
-        <span>×</span>
-        <input type="number" class="piece-height" min="1" placeholder="높이">
-        <span>×</span>
-        <input type="number" class="piece-count" value="1" min="1" placeholder="개수">
-        <button class="btn-remove" onclick="removePiece(this)">✕</button>
-    `;
-    piecesList.appendChild(newRow);
-    
-    // 포커스 자동 이동
-    newRow.querySelector('.piece-width').focus();
+// ─────────────────────────────────────────────
+// Pyodide init (기존 로직 유지)
+// ─────────────────────────────────────────────
+async function initPyodide() {
+    setStatus('Python 환경 로딩 중...');
+
+    try {
+        pyodide = await loadPyodide();
+
+        const packingResponse = await fetch(`static/packing.py?v=${Date.now()}`);
+        const packingCode = await packingResponse.text();
+        await pyodide.runPythonAsync(packingCode);
+
+        const regionResponse = await fetch(`static/region_based.py?v=${Date.now()}`);
+        let regionCode = await regionResponse.text();
+        regionCode = regionCode.replace(/from __future__ import annotations\n/g, '');
+        regionCode = regionCode.replace(/from \.\.packing import[^\n]*\n/g, '');
+        await pyodide.runPythonAsync(regionCode);
+
+        const splitResponse = await fetch(`static/region_based_split.py?v=${Date.now()}`);
+        let splitCode = await splitResponse.text();
+        splitCode = splitCode.replace(/from __future__ import annotations\n/g, '');
+        splitCode = splitCode.replace(/from \.region_based import[^\n]*\n/g, '');
+        await pyodide.runPythonAsync(splitCode);
+
+        packerReady = true;
+        setStatus('READY · 입력 후 계산을 실행하세요', 'ready');
+    } catch (error) {
+        console.error('Pyodide 초기화 실패:', error);
+        setStatus(`초기화 실패: ${error.message}`, 'error');
+    }
 }
 
-// 조각 제거
-function removePiece(button) {
-    button.parentElement.remove();
-}
-
-// 상태 메시지 표시
-function showStatus(message, type) {
-    const status = document.getElementById('status');
-    status.textContent = message;
-    status.className = `status ${type}`;
-}
-
-// 재단 계획 생성
+// ─────────────────────────────────────────────
+// Calculate (기존 Python 호출 유지)
+// ─────────────────────────────────────────────
 async function calculateCutting() {
     if (!packerReady) {
-        showStatus('Python 환경이 아직 준비되지 않았습니다', 'error');
+        setStatus('Python 환경이 아직 준비되지 않았습니다', 'error');
         return;
     }
 
-    showStatus('계산 중...', 'loading');
+    setStatus('계산 중 · REGION-BASED PACKER RUNNING');
 
     const kerf = parseInt(document.getElementById('kerf').value);
     const allowRotation = document.getElementById('allowRotation').checked;
     const strategy = document.getElementById('strategySelect').value;
 
-    const pieces = [];
-    const pieceRows = document.querySelectorAll('.piece-row');
-    for (const row of pieceRows) {
-        const width = parseInt(row.querySelector('.piece-width').value);
-        const height = parseInt(row.querySelector('.piece-height').value);
-        const count = parseInt(row.querySelector('.piece-count').value);
-        if (width && height && count) {
-            pieces.push([width, height, count]);
-        }
-    }
-    if (pieces.length === 0) {
-        showStatus('조각을 추가해주세요', 'error');
+    const piecesInput = pieces
+        .filter(p => p.width > 0 && p.height > 0 && p.count > 0)
+        .map(p => [p.width, p.height, p.count]);
+
+    if (piecesInput.length === 0) {
+        setStatus('조각을 추가해주세요', 'error');
         return;
     }
-
-    // 원판 검증
     if (stocks.length === 0) {
-        showStatus('원판을 최소 1개 추가해주세요', 'error');
+        setStatus('원판을 최소 1개 추가해주세요', 'error');
         return;
     }
     const invalidStock = stocks.find(s => s.width <= 0 || s.height <= 0 || s.count <= 0);
     if (invalidStock) {
-        showStatus('원판 치수와 수량은 모두 양수여야 합니다', 'error');
+        setStatus('원판 치수와 수량은 모두 양수여야 합니다', 'error');
         return;
     }
 
     try {
-        pyodide.globals.set('pieces_input', pieces);
+        pyodide.globals.set('pieces_input', piecesInput);
         pyodide.globals.set('stocks_input', stocks.map(s => [s.width, s.height, s.count]));
         pyodide.globals.set('kerf', kerf);
         pyodide.globals.set('allow_rotation', allowRotation);
@@ -316,214 +313,365 @@ placed_pieces = total_pieces - len(unplaced)
 }
         `);
 
-        const data = result.toJs({dict_converter: Object.fromEntries});
+        const data = result.toJs({ dict_converter: Object.fromEntries });
+        lastResult = { data, kerf, strategy, allowRotation };
+        displayResult(data, kerf, strategy);
 
-        displayResult(data, kerf);
-        showStatus('계산 완료!', 'success');
-
+        const eff = data.total_pieces === 0 ? 0 : (data.placed_pieces / data.total_pieces * 100).toFixed(0);
+        setStatus(`완료 · 배치율 ${eff}% · ${data.plates_used}장 사용`, 'ready');
     } catch (error) {
         console.error('Error:', error);
-        showStatus(`오류 발생: ${error.message}`, 'error');
+        setStatus(`오류 발생: ${error.message}`, 'error');
     }
 }
 
-// 결과 표시
-function displayResult(data, kerf) {
-    const statsDiv = document.getElementById('resultStats');
-    const visualDiv = document.getElementById('visualization');
+// ─────────────────────────────────────────────
+// Result rendering
+// ─────────────────────────────────────────────
+function displayResult(data, kerf, strategy) {
+    // crumb
+    const crumb = document.getElementById('resultCrumb');
+    const stratLabel = strategy === 'region_based_split' ? 'REGION-BASED + SPLIT' : 'REGION-BASED';
+    crumb.textContent = `${stratLabel} · KERF ${kerf}mm`;
 
-    // 통계 표시
-    const efficiency = (data.placed_pieces / data.total_pieces * 100).toFixed(1);
+    // sheet
+    const sheet = document.getElementById('sheetNo');
+    const total = data.plates_used || 0;
+    sheet.textContent = `${String(Math.max(total, 1)).padStart(2, '0')} / ${String(Math.max(total, 1)).padStart(2, '0')}`;
+
+    // stats
+    const efficiency = data.total_pieces === 0
+        ? 0
+        : (data.placed_pieces / data.total_pieces * 100);
+    const effText = efficiency.toFixed(1);
+
+    setStat('statTotal', data.total_pieces, 'pcs');
+    setStat('statPlaced', data.placed_pieces, 'pcs');
+    setStat('statPlates', data.plates_used, 'sheet');
+    setStat('statEff', effText, '%');
+
+    setBar('totalBar', 100);
+    setBar('placedBar', data.total_pieces === 0 ? 0 : (data.placed_pieces / data.total_pieces * 100));
+    setBar('platesBar', Math.min(100, data.plates_used * 25));
+    setBar('effBar', efficiency);
+
+    // warning banner (unplaced)
+    const warnWrap = document.getElementById('warningBanner');
     const unplaced = data.unplaced_pieces || [];
-
-    let warningHtml = '';
     if (unplaced.length > 0) {
         const counts = {};
         unplaced.forEach(p => {
-            const key = `${p.width}×${p.height}`;
+            const key = `${p.width}×${p.height}mm`;
             counts[key] = (counts[key] || 0) + 1;
         });
         const items = Object.entries(counts)
-            .map(([size, n]) => `<li>${size}mm × ${n}개</li>`)
+            .map(([size, n]) => `<li>${size} × ${n}개</li>`)
             .join('');
-        warningHtml = `
-            <div class="warning-banner" style="background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:12px;margin-bottom:12px;border-radius:4px;">
-                <strong>⚠️ 원판 재고 부족:</strong> ${unplaced.length}개 조각 미배치
-                <ul style="margin:6px 0 0 20px;">${items}</ul>
-                <div style="margin-top:6px;font-size:0.9em;">원판 수량을 늘리거나 조각 크기를 확인하세요.</div>
+        warnWrap.innerHTML = `
+            <div class="warning-banner">
+                <div class="wb-title">원판 재고 부족 · ${unplaced.length}개 조각 미배치</div>
+                <ul>${items}</ul>
+                <div class="wb-hint">원판 수량을 늘리거나 조각 크기를 확인하세요.</div>
             </div>
         `;
+    } else {
+        warnWrap.innerHTML = '';
     }
 
-    statsDiv.innerHTML = warningHtml + `
-        <div><strong>총 조각:</strong> ${data.total_pieces}개</div>
-        <div><strong>배치 조각:</strong> ${data.placed_pieces}개</div>
-        <div><strong>사용 원판:</strong> ${data.plates_used}장</div>
-        <div><strong>배치율:</strong> ${efficiency}%</div>
+    // plates
+    const container = document.getElementById('platesContainer');
+    container.innerHTML = '';
+    if (!data.plates || data.plates.length === 0) {
+        container.innerHTML = `<div class="empty-plates mono">배치된 원판이 없습니다</div>`;
+        return;
+    }
+    data.plates.forEach((plate, i) => {
+        container.appendChild(renderPlate(plate, i + 1, data.plates.length));
+    });
+}
+
+function setStat(id, value, unit) {
+    const el = document.getElementById(id);
+    el.innerHTML = `${value}<span class="unit">${unit}</span>`;
+}
+function setBar(id, pct) {
+    const el = document.getElementById(id);
+    if (el) el.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+}
+
+// ─────────────────────────────────────────────
+// SVG plate drawing (CAD technical style)
+// ─────────────────────────────────────────────
+function renderPlate(plate, num, total) {
+    const card = document.createElement('div');
+    card.className = 'plate-card';
+
+    const totalArea = plate.width * plate.height;
+    const used = plate.pieces.reduce((s, p) => {
+        const pw = p.rotated ? p.height : p.width;
+        const ph = p.rotated ? p.width : p.height;
+        return s + pw * ph;
+    }, 0);
+    const eff = ((used / totalArea) * 100).toFixed(1);
+
+    card.innerHTML = `
+        <header>
+            <div class="lbl">
+                <span class="pid">PLATE ${String(num).padStart(2, '0')} / ${String(total).padStart(2, '0')}</span>
+                <span class="pname">원판 ${num}</span>
+            </div>
+            <div class="meta">
+                <span><i>SIZE</i>${plate.width} × ${plate.height} mm</span>
+                <span><i>PCS</i>${plate.pieces.length}</span>
+                <span><i>USE</i>${eff}%</span>
+            </div>
+        </header>
+        <div class="plate-svg-wrap"></div>
+        <div class="legend">
+            <span class="k"><span class="sw"></span>조각 (piece)</span>
+            <span class="k"><span class="sw cut"></span>절단선 (cut)</span>
+            <span class="k"><span class="sw dim"></span>치수선 (dimension)</span>
+            <span class="k" style="margin-left:auto;">단위: mm · 축척 1:10</span>
+        </div>
     `;
 
-    // SVG 시각화
-    visualDiv.innerHTML = '';
+    const viewW = 920;
+    const marginL = 70, marginR = 70, marginT = 70, marginB = 70;
+    const scale = (viewW - marginL - marginR) / plate.width;
+    const drawH = plate.height * scale;
+    const viewH = drawH + marginT + marginB;
 
-    data.plates.forEach((plate, plateIndex) => {
-        const svgContainer = document.createElement('div');
-        svgContainer.style.marginBottom = '30px';
-
-        const title = document.createElement('h3');
-        title.textContent = `원판 ${plateIndex + 1} (${plate.width}×${plate.height}mm)`;
-        title.style.textAlign = 'center';
-        title.style.marginBottom = '10px';
-        svgContainer.appendChild(title);
-
-        const svg = createPlateSVG(plate, plate.width, plate.height, kerf);
-        svgContainer.appendChild(svg);
-
-        visualDiv.appendChild(svgContainer);
-    });
-}
-
-// SVG 생성
-function createPlateSVG(plate, plateWidth, plateHeight, kerf) {
-    const scale = 0.3; // 화면에 맞게 축소
-    const padding = 40;
-    const svgWidth = plateWidth * scale + padding * 2;
-    const svgHeight = plateHeight * scale + padding * 2;
-
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('width', svgWidth);
-    svg.setAttribute('height', svgHeight);
-    svg.setAttribute('viewBox', `0 0 ${svgWidth} ${svgHeight}`);
-
-    // 배경 (원판)
-    const plateBg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    plateBg.setAttribute('x', padding);
-    plateBg.setAttribute('y', padding);
-    plateBg.setAttribute('width', plateWidth * scale);
-    plateBg.setAttribute('height', plateHeight * scale);
-    plateBg.setAttribute('fill', '#f9f9f9');
-    plateBg.setAttribute('stroke', '#333');
-    plateBg.setAttribute('stroke-width', '2');
-    svg.appendChild(plateBg);
-
-    // 조각 색상 팔레트
-    const colors = [
-        '#3498db', '#e74c3c', '#2ecc71', '#f39c12',
-        '#9b59b6', '#1abc9c', '#34495e', '#e67e22',
-        '#95a5a6', '#d35400', '#c0392b', '#27ae60'
-    ];
-
-    // 조각 그리기
-    plate.pieces.forEach((piece, index) => {
-        const x = padding + piece.x * scale;
-
-        // Y축 변환: matplotlib(좌하단 원점) → SVG(좌상단 원점)
-        const actualW = (piece.rotated ? piece.height : piece.width) * scale;
-        const actualH = (piece.rotated ? piece.width : piece.height) * scale;
-        const pieceHeight = piece.rotated ? piece.width : piece.height;
-        const y = padding + (plateHeight - piece.y - pieceHeight) * scale;
-
-        // 조각 사각형
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', x);
-        rect.setAttribute('y', y);
-        rect.setAttribute('width', actualW);
-        rect.setAttribute('height', actualH);
-        rect.setAttribute('fill', colors[index % colors.length]);
-        rect.setAttribute('fill-opacity', '0.7');
-        rect.setAttribute('stroke', '#333');
-        rect.setAttribute('stroke-width', '1');
-        svg.appendChild(rect);
-
-        // 조각 번호 (좌상단)
-        const pieceNum = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        pieceNum.setAttribute('x', x + 5);
-        pieceNum.setAttribute('y', y + 15);
-        pieceNum.setAttribute('font-size', '12');
-        pieceNum.setAttribute('font-weight', 'bold');
-        pieceNum.setAttribute('fill', 'white');
-        pieceNum.textContent = `#${index + 1}`;
-        svg.appendChild(pieceNum);
-
-        // 조각 크기 (중앙)
-        const sizeText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-        sizeText.setAttribute('x', x + actualW / 2);
-        sizeText.setAttribute('y', y + actualH / 2);
-        sizeText.setAttribute('text-anchor', 'middle');
-        sizeText.setAttribute('dominant-baseline', 'middle');
-        sizeText.setAttribute('font-size', '11');
-        sizeText.setAttribute('fill', 'white');
-        sizeText.setAttribute('font-weight', 'bold');
-        sizeText.textContent = `${piece.width}×${piece.height}${piece.rotated ? ' ↻' : ''}`;
-        svg.appendChild(sizeText);
+    const svg = svgEl('svg', {
+        viewBox: `0 0 ${viewW} ${viewH}`,
+        width: '100%',
     });
 
-    // 절단선 그리기
-    if (plate.cuts) {
-        plate.cuts.forEach((cut, index) => {
-            const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    const X = (x) => marginL + x * scale;
+    const Y = (y, h = 0) => marginT + (plate.height - y - h) * scale;
+    const W = (w) => w * scale;
+    const H = (h) => h * scale;
 
-            // direction: 'H' (horizontal) or 'V' (vertical)
-            const isHorizontal = cut.direction === 'H';
+    // 1. plate outline
+    svg.appendChild(svgEl('rect', {
+        x: marginL, y: marginT,
+        width: W(plate.width), height: H(plate.height),
+        class: 'sv-plate',
+    }));
 
-            if (isHorizontal) {
-                // Y축 변환: matplotlib(좌하단) → SVG(좌상단)
-                const y = padding + (plateHeight - cut.position) * scale;
-                const x1 = padding + (cut.start || 0) * scale;
-                const x2 = padding + (cut.end || plateWidth) * scale;
-                line.setAttribute('x1', x1);
-                line.setAttribute('y1', y);
-                line.setAttribute('x2', x2);
-                line.setAttribute('y2', y);
-            } else {
-                const x = padding + cut.position * scale;
-                // Y축 변환: start/end도 뒤집기
-                const y1 = padding + (plateHeight - (cut.start || 0)) * scale;
-                const y2 = padding + (plateHeight - (cut.end || plateHeight)) * scale;
-                line.setAttribute('x1', x);
-                line.setAttribute('y1', y1);
-                line.setAttribute('x2', x);
-                line.setAttribute('y2', y2);
-            }
+    // 2. pieces
+    plate.pieces.forEach((p, idx) => {
+        const pw = p.rotated ? p.height : p.width;
+        const ph = p.rotated ? p.width : p.height;
+        const px = X(p.x);
+        const py = Y(p.y, ph);
 
-            line.setAttribute('stroke', '#e74c3c');
-            line.setAttribute('stroke-width', '1.5');
-            line.setAttribute('stroke-dasharray', '5,3');
-            svg.appendChild(line);
+        svg.appendChild(svgEl('rect', {
+            x: px, y: py,
+            width: W(pw), height: H(ph),
+            class: 'sv-piece' + (idx % 2 ? ' alt' : ''),
+        }));
 
-            // 절단선 번호 (선의 중간 지점에 표시)
-            const cutLabel = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        svg.appendChild(svgText({
+            x: px + 6, y: py + 14,
+            class: 'sv-label-num',
+        }, `#${idx + 1}`));
 
-            let labelX, labelY;
-            if (isHorizontal) {
-                // 가로선: x는 선의 중간, y는 선 위치보다 약간 위
-                const x1 = padding + (cut.start || 0) * scale;
-                const x2 = padding + (cut.end || plateWidth) * scale;
-                labelX = (x1 + x2) / 2;
-                // Y축 변환
-                labelY = padding + (plateHeight - cut.position) * scale - 3;
-            } else {
-                // 세로선: x는 선 위치보다 약간 오른쪽, y는 선의 중간
-                // Y축 변환
-                const y1 = padding + (plateHeight - (cut.start || 0)) * scale;
-                const y2 = padding + (plateHeight - (cut.end || plateHeight)) * scale;
-                labelX = padding + cut.position * scale + 3;
-                labelY = (y1 + y2) / 2;
-            }
+        if (W(pw) > 70 && H(ph) > 30) {
+            svg.appendChild(svgText({
+                x: px + W(pw) / 2,
+                y: py + H(ph) / 2 + 4,
+                'text-anchor': 'middle',
+                class: 'sv-label',
+            }, `${p.width}×${p.height}${p.rotated ? ' ↻' : ''}`));
+        }
+    });
 
-            cutLabel.setAttribute('x', labelX);
-            cutLabel.setAttribute('y', labelY);
-            cutLabel.setAttribute('font-size', '10');
-            cutLabel.setAttribute('font-weight', 'bold');
-            cutLabel.setAttribute('fill', '#e74c3c');
-            cutLabel.setAttribute('text-anchor', 'middle');
-            cutLabel.setAttribute('dominant-baseline', 'middle');
-            cutLabel.setAttribute('stroke', 'white');
-            cutLabel.setAttribute('stroke-width', '3');
-            cutLabel.setAttribute('paint-order', 'stroke');
-            cutLabel.textContent = `${cut.order || index + 1}`;
-            svg.appendChild(cutLabel);
-        });
+    // 3. cuts
+    (plate.cuts || []).forEach((cut, idx) => {
+        let x1, y1, x2, y2, lx, ly;
+        if (cut.direction === 'H') {
+            const yy = Y(cut.position);
+            x1 = X(cut.start || 0);
+            x2 = X(cut.end ?? plate.width);
+            y1 = y2 = yy;
+            lx = (x1 + x2) / 2;
+            ly = yy - 6;
+        } else {
+            const xx = X(cut.position);
+            const sy = Y(cut.start || 0);
+            const ey = Y(cut.end ?? plate.height);
+            x1 = x2 = xx; y1 = sy; y2 = ey;
+            lx = xx + 7;
+            ly = (y1 + y2) / 2 + 4;
+        }
+
+        svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'sv-cut' }));
+
+        const badge = svgEl('g', {});
+        badge.appendChild(svgEl('circle', {
+            cx: lx, cy: ly - 3, r: 9,
+            fill: 'var(--bg-elev)',
+            stroke: 'var(--accent)',
+            'stroke-width': 1,
+        }));
+        badge.appendChild(svgText({
+            x: lx, y: ly,
+            'text-anchor': 'middle',
+            class: 'sv-label-cut',
+        }, String(cut.order || idx + 1)));
+        svg.appendChild(badge);
+    });
+
+    // 4. overall dimensions — bottom width
+    const dimY = marginT + H(plate.height) + 34;
+    drawDim(svg, marginL, dimY, marginL + W(plate.width), dimY, `${plate.width}`, 'h');
+    svg.appendChild(svgEl('line', {
+        x1: marginL, y1: marginT + H(plate.height),
+        x2: marginL, y2: dimY + 4,
+        class: 'sv-dim-ext',
+    }));
+    svg.appendChild(svgEl('line', {
+        x1: marginL + W(plate.width), y1: marginT + H(plate.height),
+        x2: marginL + W(plate.width), y2: dimY + 4,
+        class: 'sv-dim-ext',
+    }));
+
+    // right height dimension
+    const dimX = marginL + W(plate.width) + 36;
+    drawDim(svg, dimX, marginT, dimX, marginT + H(plate.height), `${plate.height}`, 'v');
+    svg.appendChild(svgEl('line', {
+        x1: marginL + W(plate.width), y1: marginT,
+        x2: dimX + 4, y2: marginT,
+        class: 'sv-dim-ext',
+    }));
+    svg.appendChild(svgEl('line', {
+        x1: marginL + W(plate.width), y1: marginT + H(plate.height),
+        x2: dimX + 4, y2: marginT + H(plate.height),
+        class: 'sv-dim-ext',
+    }));
+
+    // 5. origin marker
+    svg.appendChild(svgEl('circle', {
+        cx: marginL, cy: marginT + H(plate.height),
+        r: 3, fill: 'var(--ink)',
+    }));
+    svg.appendChild(svgText({
+        x: marginL - 8, y: marginT + H(plate.height) + 16,
+        'text-anchor': 'end',
+        class: 'sv-label-dim',
+    }, '(0,0)'));
+
+    // 6. axis ticks (500mm grid)
+    for (let v = 500; v < plate.width; v += 500) {
+        const px = X(v);
+        svg.appendChild(svgEl('line', {
+            x1: px, y1: marginT + H(plate.height),
+            x2: px, y2: marginT + H(plate.height) + 5,
+            class: 'sv-dim',
+        }));
+        svg.appendChild(svgText({
+            x: px, y: marginT + H(plate.height) + 16,
+            'text-anchor': 'middle',
+            class: 'sv-label-dim',
+        }, String(v)));
+    }
+    for (let v = 500; v < plate.height; v += 500) {
+        const py = Y(v);
+        svg.appendChild(svgEl('line', {
+            x1: marginL - 5, y1: py,
+            x2: marginL, y2: py,
+            class: 'sv-dim',
+        }));
+        svg.appendChild(svgText({
+            x: marginL - 8, y: py + 3,
+            'text-anchor': 'end',
+            class: 'sv-label-dim',
+        }, String(v)));
     }
 
-    return svg;
+    card.querySelector('.plate-svg-wrap').appendChild(svg);
+    return card;
 }
+
+function drawDim(svg, x1, y1, x2, y2, label, dir) {
+    svg.appendChild(svgEl('line', { x1, y1, x2, y2, class: 'sv-dim' }));
+
+    if (dir === 'h') {
+        svg.appendChild(svgEl('polygon', {
+            points: `${x1},${y1} ${x1 + 6},${y1 - 3} ${x1 + 6},${y1 + 3}`,
+            fill: 'var(--dim-line)',
+        }));
+        svg.appendChild(svgEl('polygon', {
+            points: `${x2},${y2} ${x2 - 6},${y2 - 3} ${x2 - 6},${y2 + 3}`,
+            fill: 'var(--dim-line)',
+        }));
+        const cx = (x1 + x2) / 2, cy = y1;
+        const g = svgEl('g', {});
+        g.appendChild(svgEl('rect', {
+            x: cx - 28, y: cy - 8, width: 56, height: 16,
+            fill: 'var(--bg-elev)',
+        }));
+        g.appendChild(svgText({
+            x: cx, y: cy + 4,
+            'text-anchor': 'middle',
+            class: 'sv-label-dim',
+        }, label));
+        svg.appendChild(g);
+    } else {
+        svg.appendChild(svgEl('polygon', {
+            points: `${x1},${y1} ${x1 - 3},${y1 + 6} ${x1 + 3},${y1 + 6}`,
+            fill: 'var(--dim-line)',
+        }));
+        svg.appendChild(svgEl('polygon', {
+            points: `${x2},${y2} ${x2 - 3},${y2 - 6} ${x2 + 3},${y2 - 6}`,
+            fill: 'var(--dim-line)',
+        }));
+        const cx = x1, cy = (y1 + y2) / 2;
+        const g = svgEl('g', { transform: `rotate(-90 ${cx} ${cy})` });
+        g.appendChild(svgEl('rect', {
+            x: cx - 28, y: cy - 8, width: 56, height: 16,
+            fill: 'var(--bg-elev)',
+        }));
+        g.appendChild(svgText({
+            x: cx, y: cy + 4,
+            'text-anchor': 'middle',
+            class: 'sv-label-dim',
+        }, label));
+        svg.appendChild(g);
+    }
+}
+
+function svgEl(name, attrs) {
+    const e = document.createElementNS('http://www.w3.org/2000/svg', name);
+    Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
+    return e;
+}
+function svgText(attrs, text) {
+    const e = svgEl('text', attrs);
+    e.textContent = text;
+    return e;
+}
+
+// ─────────────────────────────────────────────
+// Wiring
+// ─────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('addStockBtn').addEventListener('click', () => addStockRow());
+    document.getElementById('addPieceBtn').addEventListener('click', () => addPiece());
+    document.getElementById('calculateBtn').addEventListener('click', () => calculateCutting());
+    document.getElementById('presetSelect').addEventListener('change', (e) => loadPreset(e.target.value));
+    document.getElementById('savePresetBtn').addEventListener('click', saveCurrentAsPreset);
+    document.getElementById('deletePresetBtn').addEventListener('click', deleteCurrentPreset);
+
+    // ⌘/Ctrl + Enter 단축키
+    document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.preventDefault();
+            calculateCutting();
+        }
+    });
+
+    addStockRow();      // 기본 원판 1행 (2440×1220 1장)
+    loadUserPresets();
+    initPyodide();
+});

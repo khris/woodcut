@@ -1,121 +1,233 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>목재 재단기 — Woodcut Optimizer</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="static/style.css">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>목재 재단기 — Woodcut</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="static/style.css" />
     <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="header-inner">
-                <div class="header-mark">
-                    <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
-                        <rect x="2" y="2" width="24" height="24" rx="4" stroke="currentColor" stroke-width="1.5"/>
-                        <line x1="2" y1="10" x2="26" y2="10" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>
-                        <line x1="14" y1="2" x2="14" y2="26" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/>
-                        <rect x="3" y="3" width="10" height="6" rx="1" fill="currentColor" opacity="0.15"/>
-                        <rect x="15" y="3" width="8" height="6" rx="1" fill="currentColor" opacity="0.1"/>
-                        <rect x="3" y="12" width="6" height="12" rx="1" fill="currentColor" opacity="0.1"/>
-                    </svg>
-                </div>
-                <div>
-                    <h1>목재 재단기</h1>
-                    <p>Guillotine Cut Optimizer</p>
-                </div>
+<div class="frame">
+
+    <!-- ═══ TITLE BLOCK ═══ -->
+    <div class="titleblock">
+        <div class="cell title">
+            <div class="logo"></div>
+            <div>
+                <div class="h">목재 재단기</div>
+                <div class="sub">Woodcut · Guillotine Cut Optimizer</div>
             </div>
-        </header>
+        </div>
+        <div class="cell">
+            <span class="k">Drawing No.</span>
+            <span class="v mono" id="drawingNo">WC-0000-00-00</span>
+        </div>
+        <div class="cell">
+            <span class="k">Scale · Unit</span>
+            <span class="v mono">1:10 · mm</span>
+        </div>
+        <div class="cell" style="grid-column: span 2;">
+            <span class="k">Project · Revision</span>
+            <span class="v mono">WOODCUT v2.0 / REV. A</span>
+        </div>
+        <div class="cell">
+            <span class="k">Sheet</span>
+            <span class="v mono" id="sheetNo">01 / 01</span>
+        </div>
+    </div>
 
-        <div class="main-content">
-            <!-- 입력 폼 -->
-            <div class="input-panel">
-                <div class="panel-section">
-                    <h2>재단 설정</h2>
+    <!-- ═══ WORKSPACE ═══ -->
+    <div class="workspace">
 
-                    <div class="form-group">
-                        <label for="kerf">톱날 두께 <span class="unit">mm</span></label>
-                        <input type="number" id="kerf" value="5" min="0">
+        <!-- ── Input column ── -->
+        <div class="input-col">
+
+            <!-- § 00 · 재단 설정 -->
+            <section class="section">
+                <header>
+                    <div class="sec-lbl">
+                        <span class="num">§ 00</span>
+                        <span class="name">재단 설정</span>
                     </div>
-
-                    <div class="form-group form-group--toggle">
+                    <span class="tag">PARAMS</span>
+                </header>
+                <div class="body">
+                    <div class="field">
                         <label>
-                            <input type="checkbox" id="allowRotation">
-                            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-                            <span class="toggle-label">조각 회전 허용</span>
+                            <span class="idx">00.1</span> 톱날 두께
+                            <span class="mono" style="color:var(--ink-ghost); font-size:10.5px;">kerf</span>
                         </label>
+                        <div class="ctl">
+                            <input type="number" id="kerf" value="5" min="0" />
+                            <span class="unit">mm</span>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label for="strategySelect">패킹 전략</label>
-                        <select id="strategySelect">
-                            <option value="region_based">Region Based (기본)</option>
-                            <option value="region_based_split">Region Based with Split (그룹 분할)</option>
-                        </select>
+                    <div class="field">
+                        <label><span class="idx">00.2</span> 조각 회전 허용</label>
+                        <div class="ctl">
+                            <label class="toggle" data-on="false" id="rotationToggle">
+                                <input type="checkbox" id="allowRotation" />
+                                <span class="opt opt-off">OFF</span>
+                                <span class="opt opt-on">ON</span>
+                            </label>
+                        </div>
                     </div>
 
-                    <div class="form-group">
-                        <label for="presetSelect">프리셋 불러오기</label>
-                        <div class="preset-controls">
-                            <select id="presetSelect" onchange="loadPreset(this.value)">
-                                <option value="">프리셋 선택</option>
-                                <optgroup label="기본 프리셋">
-                                    <option value="basic">기본 예제 (다양한 크기)</option>
-                                    <option value="cabinet">수납장 (일관된 높이)</option>
-                                    <option value="shelf">선반 (긴 조각 위주)</option>
-                                </optgroup>
-                                <optgroup id="userPresetsGroup" label="사용자 프리셋">
-                                </optgroup>
+                    <div class="field">
+                        <label><span class="idx">00.3</span> 패킹 전략</label>
+                        <div class="ctl">
+                            <select id="strategySelect">
+                                <option value="region_based">Region Based · 기본</option>
+                                <option value="region_based_split">Region Based + Split</option>
                             </select>
-                            <button class="btn-save-preset" onclick="saveCurrentAsPreset()" title="현재 조각들을 프리셋으로 저장">저장</button>
-                            <button class="btn-delete-preset" onclick="deleteCurrentPreset()" title="선택된 사용자 프리셋 삭제">삭제</button>
                         </div>
                     </div>
                 </div>
+            </section>
 
-                <div class="panel-section">
-                    <h3>보유 원판</h3>
-                    <div id="stocksList"></div>
-                    <button type="button" class="btn-add" id="addStockBtn">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
-                        원판 추가
-                    </button>
-                </div>
-
-                <div class="panel-section">
-                    <h3>조각 목록</h3>
-                    <div id="piecesList">
-                        <!-- 사용자 입력 대기 -->
+            <!-- § 01 · 프리셋 -->
+            <section class="section">
+                <header>
+                    <div class="sec-lbl">
+                        <span class="num">§ 01</span>
+                        <span class="name">프리셋</span>
                     </div>
+                    <span class="tag">PRESET</span>
+                </header>
+                <div class="body">
+                    <div class="preset-bar">
+                        <select id="presetSelect">
+                            <option value="">프리셋 선택</option>
+                            <optgroup label="기본 프리셋">
+                                <option value="basic">기본 예제 — 다양한 크기</option>
+                                <option value="cabinet">수납장 — 일관된 높이</option>
+                                <option value="shelf">선반 — 긴 조각 위주</option>
+                            </optgroup>
+                            <optgroup label="사용자 프리셋" id="userPresetsGroup"></optgroup>
+                        </select>
+                        <button class="btn-s" id="savePresetBtn">저장</button>
+                        <button class="btn-s danger" id="deletePresetBtn">삭제</button>
+                    </div>
+                </div>
+            </section>
 
-                    <button class="btn-add" onclick="addPiece()">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
-                        조각 추가
+            <!-- § 02 · 보유 원판 -->
+            <section class="section">
+                <header>
+                    <div class="sec-lbl">
+                        <span class="num">§ 02</span>
+                        <span class="name">보유 원판 (Stock)</span>
+                    </div>
+                    <span class="tag" id="stockCountTag">00 ITEMS</span>
+                </header>
+                <div class="body">
+                    <div class="rowlist">
+                        <div class="head">
+                            <span>#</span>
+                            <span>W</span>
+                            <span></span>
+                            <span>H</span>
+                            <span></span>
+                            <span>수량</span>
+                            <span></span>
+                        </div>
+                        <div id="stocksList"></div>
+                    </div>
+                    <button class="btn-add" id="addStockBtn">
+                        <span class="plus"></span> 원판 추가
                     </button>
                 </div>
+            </section>
 
-                <button class="btn-calculate" onclick="calculateCutting()">재단 계획 생성</button>
+            <!-- § 03 · 조각 목록 -->
+            <section class="section">
+                <header>
+                    <div class="sec-lbl">
+                        <span class="num">§ 03</span>
+                        <span class="name">조각 목록 (Pieces)</span>
+                    </div>
+                    <span class="tag" id="pieceCountTag">00 TYPE · 00 PCS</span>
+                </header>
+                <div class="body">
+                    <div class="rowlist">
+                        <div class="head">
+                            <span>#</span>
+                            <span>W</span>
+                            <span></span>
+                            <span>H</span>
+                            <span></span>
+                            <span>개수</span>
+                            <span></span>
+                        </div>
+                        <div id="piecesList"></div>
+                    </div>
+                    <button class="btn-add" id="addPieceBtn">
+                        <span class="plus"></span> 조각 추가
+                    </button>
+                </div>
+            </section>
 
-                <div id="status" class="status"></div>
-            </div>
-
-            <!-- 결과 표시 -->
-            <div class="result-panel">
-                <h2>재단 결과</h2>
-                <div id="resultStats" class="result-stats"></div>
-                <div id="visualization" class="visualization"></div>
-            </div>
+            <button class="cta" id="calculateBtn">
+                <span>재단 계획 생성 →</span>
+                <span class="kbd">⌘ ENTER</span>
+            </button>
+            <div class="status" id="status">초기화 중...</div>
         </div>
 
-        <footer>
-            <p>Woodcut — Guillotine Cut Optimization Tool</p>
-        </footer>
+        <!-- ── Result column ── -->
+        <div class="result-col">
+            <div class="result-head">
+                <div>
+                    <h2>재단 결과</h2>
+                    <div class="crumbs mono">§ 04 / CUTTING PLAN / LAYOUT</div>
+                </div>
+                <div class="crumbs mono" id="resultCrumb">REGION-BASED · KERF 5mm</div>
+            </div>
+
+            <div id="warningBanner"></div>
+
+            <div class="stats">
+                <div class="stat">
+                    <div class="k">총 조각</div>
+                    <div class="v mono" id="statTotal">0<span class="unit">pcs</span></div>
+                    <div class="bar"><i id="totalBar" style="width: 0%;"></i></div>
+                </div>
+                <div class="stat">
+                    <div class="k">배치 조각</div>
+                    <div class="v mono" id="statPlaced">0<span class="unit">pcs</span></div>
+                    <div class="bar"><i id="placedBar" style="width: 0%;"></i></div>
+                </div>
+                <div class="stat">
+                    <div class="k">사용 원판</div>
+                    <div class="v mono" id="statPlates">0<span class="unit">sheet</span></div>
+                    <div class="bar"><i id="platesBar" style="width: 0%;"></i></div>
+                </div>
+                <div class="stat">
+                    <div class="k">배치율</div>
+                    <div class="v mono" id="statEff">0<span class="unit">%</span></div>
+                    <div class="bar"><i id="effBar" style="width: 0%;"></i></div>
+                </div>
+            </div>
+
+            <div class="plates" id="platesContainer">
+                <div class="empty-plates mono">PLATES 렌더 대기 · 계산을 실행하세요</div>
+            </div>
+        </div>
     </div>
 
-    <script src="static/app.js"></script>
+    <div class="footer">
+        <span>DRAWN BY · WOODCUT ENGINE</span>
+        <span>APPROVED · GUILLOTINE CUT ONLY</span>
+        <span>© WOODCUT · OPTIMIZER</span>
+    </div>
+</div>
+
+<script src="static/app.js"></script>
 </body>
 </html>
