@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """대화형 재단 최적화 CLI"""
 
+from collections import Counter
+
 from .strategies import RegionBasedPacker
 from .visualizer import visualize_solution
 
@@ -122,7 +124,15 @@ def run_interactive():
     strategy_name = "region_based"
 
     # 패킹 실행
-    plates = packer.pack(pieces)
+    plates, unplaced = packer.pack(pieces)
+
+    # 원판 재고 부족 경고
+    if unplaced:
+        counts = Counter((p['width'], p['height']) for p in unplaced)
+        print(f"\n⚠️  원판 재고 부족: {len(unplaced)}개 조각 미배치")
+        for (w, h), n in counts.items():
+            print(f"   - {w}×{h}mm × {n}개")
+        print("   → 원판 수량을 늘리거나 조각 크기를 확인하세요.")
 
     # 시각화
     visualize_solution(plates, pieces, strategy_name)

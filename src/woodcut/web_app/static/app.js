@@ -301,17 +301,18 @@ async function calculateCutting() {
 
         const result = await pyodide.runPythonAsync(`
 packer = ${packerClass}(stocks_input, kerf, allow_rotation)
-plates = packer.pack(pieces_input)
+plates, unplaced = packer.pack(pieces_input)
 
 total_pieces = sum(p[2] for p in pieces_input)
-placed_pieces = sum(len(plate['pieces']) for plate in plates)
+placed_pieces = total_pieces - len(unplaced)
 
 {
-    'success': True,
+    'success': len(unplaced) == 0,
     'total_pieces': total_pieces,
     'placed_pieces': placed_pieces,
     'plates_used': len(plates),
-    'plates': plates
+    'plates': plates,
+    'unplaced_pieces': unplaced,
 }
         `);
 
@@ -333,7 +334,28 @@ function displayResult(data, kerf) {
 
     // 통계 표시
     const efficiency = (data.placed_pieces / data.total_pieces * 100).toFixed(1);
-    statsDiv.innerHTML = `
+    const unplaced = data.unplaced_pieces || [];
+
+    let warningHtml = '';
+    if (unplaced.length > 0) {
+        const counts = {};
+        unplaced.forEach(p => {
+            const key = `${p.width}×${p.height}`;
+            counts[key] = (counts[key] || 0) + 1;
+        });
+        const items = Object.entries(counts)
+            .map(([size, n]) => `<li>${size}mm × ${n}개</li>`)
+            .join('');
+        warningHtml = `
+            <div class="warning-banner" style="background:#fff3cd;border:1px solid #ffc107;color:#856404;padding:12px;margin-bottom:12px;border-radius:4px;">
+                <strong>⚠️ 원판 재고 부족:</strong> ${unplaced.length}개 조각 미배치
+                <ul style="margin:6px 0 0 20px;">${items}</ul>
+                <div style="margin-top:6px;font-size:0.9em;">원판 수량을 늘리거나 조각 크기를 확인하세요.</div>
+            </div>
+        `;
+    }
+
+    statsDiv.innerHTML = warningHtml + `
         <div><strong>총 조각:</strong> ${data.total_pieces}개</div>
         <div><strong>배치 조각:</strong> ${data.placed_pieces}개</div>
         <div><strong>사용 원판:</strong> ${data.plates_used}장</div>

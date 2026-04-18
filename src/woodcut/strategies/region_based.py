@@ -45,13 +45,20 @@ class RegionBasedPacker(PackingStrategy):
     - 작업 편의성: 같은 높이/너비 조각들이 그룹화
     """
 
-    def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
+    def pack(
+        self, pieces: list[tuple[int, int, int]]
+    ) -> tuple[list[dict], list[dict]]:
         """멀티 stock 패킹.
 
         매 iteration마다:
           1. 각 남은 stock 종류에 대해 1장 시뮬레이션
           2. (pieces_placed, utilization) 사전식 최고 stock 선택
           3. 해당 stock count 차감, 배치된 조각 제거
+
+        Returns:
+            (plates, unplaced):
+                plates: 배치된 판 리스트
+                unplaced: 재고 부족/크기 초과로 배치 못 한 조각 dict 리스트
         """
         all_pieces = self.expand_pieces(pieces)
         plates = []
@@ -124,10 +131,7 @@ class RegionBasedPacker(PackingStrategy):
 
             plate_num += 1
 
-        if remaining_pieces:
-            print(f"\n⚠️  미배치 조각 {len(remaining_pieces)}개 — stock 부족 또는 크기 초과")
-
-        return plates
+        return plates, remaining_pieces
 
     def _pack_single_plate(self, remaining_pieces: list[dict]) -> dict:
         """현재 self.plate_width/height 기준으로 원판 1장 패킹.

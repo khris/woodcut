@@ -140,6 +140,21 @@ woodcut/
 
 ---
 
+## 원판 재고 부족 시 명시 리포트 (2026-04-18)
+
+`RegionBasedPacker.pack()`는 이제 `(plates, unplaced)` 튜플을 반환한다.
+
+- **반환 형태**: `pack()` → `tuple[list[dict], list[dict]]`
+  - `plates`: 기존과 동일한 배치 결과
+  - `unplaced`: 재고 부족·크기 초과로 배치되지 못한 조각 dict 리스트
+- **CLI**: 미배치 조각이 있으면 크기별 집계와 함께 `⚠️  원판 재고 부족` 경고 출력
+- **Web API**: `CuttingResponse.unplaced_pieces`에 리스트 포함, `success = len(unplaced) == 0`
+- **Web UI**: 결과 화면 상단에 미배치 조각 경고 배너 렌더링
+
+사용자가 재고가 부족한 사실을 모르고 재단에 착수하는 위험을 방지.
+
+---
+
 ## 솔루션 문서
 
 프로젝트의 주요 개선 작업들은 `.solution/` 디렉터리에 별도 문서화:
@@ -147,6 +162,7 @@ woodcut/
 - [001: Guillotine 절단 통합](.solution/001-20251231-guillotine-cutting-integration.md) - 배치와 절단 통합, Two-Tier Priority 시스템
 - [002: 다단 배치](.solution/002-20260104-multi-tier-placement.md) - 남은 공간 활용 (계획 단계)
 - [004: 멀티 사이즈 원판](.solution/004-20260418-multi-size-stocks-plan.md) - Best-Fit Lookahead + 사전식 편향
+- [005: 원판 재고 부족 리포트](.solution/005-20260418-stock-shortage-reporting.md) - `pack()` 반환 튜플화 + CLI/API/UI 경고
 
 ---
 

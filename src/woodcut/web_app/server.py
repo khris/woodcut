@@ -57,6 +57,7 @@ class CuttingResponse(BaseModel):
     placed_pieces: int
     plates_used: int
     plates: list[dict]
+    unplaced_pieces: list[dict] = []
 
 
 @app.get("/")
@@ -81,17 +82,22 @@ async def calculate_cutting(request: CuttingRequest):
             packer = RegionBasedPackerWithSplit(stocks, request.kerf, request.allow_rotation)
         else:
             packer = RegionBasedPacker(stocks, request.kerf, request.allow_rotation)
-        plates = packer.pack(pieces)
+        plates, unplaced = packer.pack(pieces)
+
+        # free_spaces는 FreeSpace 객체 포함 내부 상태라 JSON 직렬화 불가 + 클라이언트 미사용
+        for plate in plates:
+            plate.pop('free_spaces', None)
 
         total_pieces = sum(p.count for p in request.pieces)
-        placed_pieces = sum(len(plate['pieces']) for plate in plates)
+        placed_pieces = total_pieces - len(unplaced)
 
         return CuttingResponse(
-            success=True,
+            success=(len(unplaced) == 0),
             total_pieces=total_pieces,
             placed_pieces=placed_pieces,
             plates_used=len(plates),
             plates=plates,
+            unplaced_pieces=unplaced,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
