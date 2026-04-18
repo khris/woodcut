@@ -129,12 +129,24 @@ woodcut/
 
 ---
 
+## 멀티 사이즈 원판 지원 (2026-04-18)
+
+서로 다른 규격 원판을 각기 정해진 수량만큼 보유한 상태에서 Best-Fit Lookahead + 판 수 최소화 편향으로 재단 계획 생성.
+
+- **입력**: `stocks=[(width, height, count), ...]`
+- **선택 규칙**: 매 iteration 마다 각 남은 stock 종류를 1장 시뮬레이션 후 `(pieces_placed, utilization)` 사전식 비교로 최적 stock 선택
+- **편향**: utilization만으로는 작은 원판 여러 장에 빽빽이 채우는 결과를 선호하게 됨. `pieces_placed` 우선은 "한 장에 많이 들어가면 그 한 장을 쓴다"는 실무 직관을 보존
+- **Stock 고갈·초과 조각**: 남은 조각이 모든 stock에 배치되지 못하면 즉시 종료 (무한루프 방지)
+
+---
+
 ## 솔루션 문서
 
 프로젝트의 주요 개선 작업들은 `.solution/` 디렉터리에 별도 문서화:
 
 - [001: Guillotine 절단 통합](.solution/001-20251231-guillotine-cutting-integration.md) - 배치와 절단 통합, Two-Tier Priority 시스템
 - [002: 다단 배치](.solution/002-20260104-multi-tier-placement.md) - 남은 공간 활용 (계획 단계)
+- [004: 멀티 사이즈 원판](.solution/004-20260418-multi-size-stocks-plan.md) - Best-Fit Lookahead + 사전식 편향
 
 ---
 
