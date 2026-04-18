@@ -930,7 +930,7 @@ class RegionBasedPacker(PackingStrategy):
 
                 # kerf 2개: 주조각↔trim 사이 + trim↔영역경계 사이
                 trim_height = row_height - piece_h - 2 * self.kerf
-                if trim_height < 50:
+                if trim_height < self.kerf:
                     continue
 
                 # 같은 행에 "중간 높이" 그룹이 있으면 skip
@@ -999,7 +999,7 @@ class RegionBasedPacker(PackingStrategy):
                             to_remove.append(later_group)
 
                         trim_width_available -= move_count * (lpiece_w + self.kerf)
-                        if trim_width_available < 50:
+                        if trim_width_available < self.kerf:
                             break
 
                     for g in to_remove:
@@ -1010,7 +1010,7 @@ class RegionBasedPacker(PackingStrategy):
                         later_region['type'] = 'scrap'
                         later_region['rows'] = [{'groups': [], 'height': 0}]
 
-                    if trim_width_available < 50:
+                    if trim_width_available < self.kerf:
                         break
 
                 if trim_groups:

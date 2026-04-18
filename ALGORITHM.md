@@ -1,340 +1,381 @@
 # Woodcut 알고리즘 상세
 
-> PLAN.md의 간략한 개요와 달리, 이 문서는 RegionBasedPacker의 상세 구현을 설명합니다.
+> 현재 코드 기준 문서 (`src/woodcut/strategies/region_based.py`, `src/woodcut/packing.py`)
 
 ---
 
-## 핵심 알고리즘 상세
+## 전체 데이터 흐름
 
-### 1. 다중 그룹 영역 배치
-
-```python
-def pack(self, pieces):
-    while remaining_pieces:
-        # 1. 레벨 1: 정확히 같은 크기끼리 그룹화
-        groups = self._group_by_exact_size(remaining_pieces)
-
-        # 2. 각 그룹의 회전 옵션 생성
-        group_options = self._generate_group_options(groups)
-
-        # 3. 그룹 회전 옵션 평면화
-        all_variants = self._flatten_group_options(group_options)
-
-        # 4. 백트래킹으로 최적 조합 찾기
-        regions = self._allocate_multi_group_backtrack(group_sets)
-
-        # 5. 각 영역 내 배치 + 절단선 생성 (통합)
-        all_cuts = []
-        for i, region in enumerate(regions):
-            placed, cuts = self._pack_multi_group_region(
-                region, region_index=i, is_first_region=(i==0)
-            )
-            if placed:
-                plate['pieces'].extend(placed)
-            if cuts:
-                for cut in cuts:
-                    cut['region_index'] = i
-                all_cuts.extend(cuts)
-
-        # 6. 절단선 우선순위 정렬
-        all_cuts.sort(key=sort_key)  # (priority, region_index, sub_priority, position)
-        plate['cuts'] = all_cuts
-
-        # 7. 배치된 조각 제거, 다음 판으로
-        remaining_pieces = [...]
+```
+입력: [(width, height, count), ...]
+        ↓
+expand_pieces()          → 개별 조각 dict 확장
+        ↓
+_group_by_exact_size()   → 정확한 크기별 그룹화
+        ↓
+_generate_group_options() → 회전/비회전 옵션 생성
+        ↓
+_flatten_group_options()  → 가로/세로 배치 변형 평면화
+        ↓
+_allocate_anchor_backtrack() → 앵커 기반 백트래킹
+        ↓
+_optimize_trim_placement()   → trim 공간 재활용 최적화
+        ↓
+_pack_multi_group_region() × N → 조각 배치 + 절단선 생성
+        ↓
+sort_key 정렬             → 절단 우선순위 확정
+        ↓
+출력: plates[{'pieces': [...], 'cuts': [...]}]
 ```
 
-**참조**: `src/woodcut/strategies/region_based.py`의 `pack()` 메서드
-
 ---
 
-### 2. 호환 그룹 세트 생성
+## 1단계: 그룹화 및 변형 생성
+
+### 1-1. 정확한 크기별 그룹화 (`_group_by_exact_size`)
+
+동일한 `(width, height)` 쌍끼리만 그룹화합니다. 유사 크기 병합은 지원하지 않습니다.
 
 ```python
-# 예시: 644×310 (3개) + 640×369 (2개, 회전)
+groups = [
+    {'size': (800, 310), 'count': 2, 'total_area': 496000},
+    {'size': (644, 310), 'count': 3, 'total_area': 598920},
+    ...
+]
+# total_area 내림차순 정렬 (큰 그룹 우선)
+```
+
+### 1-2. 회전 옵션 생성 (`_generate_group_options`)
+
+각 그룹에 대해 회전/비회전 옵션을 생성합니다. `allow_rotation=False`이면 비회전만.
+
+```python
+# (369, 640) 조각의 경우
+options = [
+    {'rotated': False, 'height': 640, 'width': 369},
+    {'rotated': True,  'height': 369, 'width': 640},  # allow_rotation=True 시
+]
+```
+
+### 1-3. 배치 변형 평면화 (`_flatten_group_options`)
+
+각 회전 옵션에 대해 **가로 배치**(기본)와 **세로 배치**(stacked) 변형을 생성합니다.
+세로 배치는 가로 배치 시 판 너비를 초과하는 경우에만 생성됩니다.
+
+```python
+# 가로 배치 (기본)
 {
-    'type': 'horizontal',
-    'max_height': 374,  # max(310, 369) + kerf
-    'groups': [
-        {'original_size': (644, 310), 'rotated': False, 'count': 3},
-        {'original_size': (369, 640), 'rotated': True, 'count': 2}
-    ],
-    'total_area': 598920 + 472320
+    'original_size': (369, 640),
+    'count': 2,
+    'rotated': False,
+    'stacked': False,
+    'height': 640,           # 조각 하나의 높이
+    'width': 369,            # 조각 하나의 너비
+    'total_width': 369 + kerf + 369 + kerf  # count × (width + kerf)
+}
+
+# 세로 배치 (가로 배치가 판 너비 초과 시)
+{
+    'stacked': True,
+    'height': (640 + kerf) * 2,  # count × (height + kerf)
+    'total_width': 369 + kerf    # 한 조각 너비만
 }
 ```
 
-**주의**: 현재는 정확히 같은 크기끼리만 그룹화됩니다. 유사 크기 병합 기능은 향후 개선 예정입니다.
-
-**참조**: `src/woodcut/strategies/region_based.py`의 `_flatten_group_options()` 메서드
-
 ---
 
-### 3. 백트래킹 영역 할당
+## 2단계: 앵커 기반 백트래킹 (`_allocate_anchor_backtrack`)
+
+### 핵심 아이디어
+
+높이가 가장 큰 그룹을 **앵커**로 선택하고, 앵커 높이 이하인 호환 그룹을 수평으로 채웁니다.
+각 영역마다 이 과정을 반복하며, 최대 조각 수를 배치하는 조합을 탐색합니다.
+
+### 앵커 선택 전략
 
 ```python
-def backtrack(selected_sets, used_groups, y_offset):
-    # 종료 조건: 모든 그룹 배치 완료
+# 높이 내림차순으로 앵커 후보 나열
+# 같은 original_size의 다른 회전 옵션도 후보로 포함
+anchor_candidates = sorted(unused_variants, key=lambda x: x['height'], reverse=True)
+```
+
+높이가 클수록 더 많은 호환 그룹을 수용할 수 있습니다.
+
+### 호환 그룹 탐색 (`_build_region_with_anchor`)
+
+앵커가 결정되면 다음 조건을 만족하는 그룹을 탐욕적으로 추가합니다:
+
+1. **높이 제약**: `v['height'] <= anchor['height']`
+2. **너비 제약**: `current_width + kerf + v['total_width'] <= plate_width`
+3. **중복 방지**: 같은 `original_size`는 한 번만 (회전 포함)
+
+```python
+# 정렬: 앵커와 높이 유사도 우선 → 면적 큰 그룹 우선
+compatible.sort(key=lambda v: (abs(max_height - v['height']), -v['area']))
+```
+
+### 백트래킹 재귀 구조
+
+```python
+def backtrack(used_groups, y_offset):
     if len(used_groups) == total_groups:
-        return selected_sets, placed_count
+        return [], 0  # 모든 그룹 배치 완료
 
-    # 각 세트 시도
-    for group_set in group_sets:
-        # 1. 이미 사용된 그룹은 스킵
-        if set_groups & used_groups:
+    for anchor in anchor_candidates:
+        # 판 높이/너비 초과 시 skip
+        if y_offset + anchor['height'] + kerf > plate_height:
             continue
 
-        # 2. 공간 체크
-        if y_offset + region_height > plate_height:
-            continue
+        region_groups, region_used = _build_region_with_anchor(anchor, ...)
+        region = {'y': y_offset, 'height': anchor['height'] + kerf, ...}
 
-        # 3. 재귀 호출
-        result_sets, result_count = backtrack(
-            selected_sets + [region],
-            used_groups | set_groups,
-            y_offset + region_height
-        )
+        sub_regions, sub_count = backtrack(new_used, new_y)
+        total = current_count + sub_count
 
-        if result_count > best_count:
-            best_count = result_count
-            best_sets = result_sets
+        if total > best_count:
+            best_count, best_regions = total, [region] + sub_regions
 
-    return best_sets, best_count
+    return best_regions, best_count
 ```
 
-**최적화:**
-- 영역 세트를 면적순으로 정렬 (큰 세트 우선)
-- 공간 부족 시 조기 가지치기
-- 모든 그룹 배치 시 즉시 종료
+### 자투리 영역
 
-**참조**: `src/woodcut/strategies/region_based.py`의 `_allocate_multi_group_backtrack()` 메서드
+백트래킹 완료 후, 마지막 영역 상단에 남은 공간이 `kerf`보다 크면 `scrap` 타입 영역으로 추가합니다.
 
 ---
 
-### 4. 절단선 생성 알고리즘 (통합형 배치+절단)
+## 3단계: Trim 최적화 (`_optimize_trim_placement`)
 
-#### 영역별 절단선 생성 로직
+### 목적
+
+백트래킹으로 배치된 영역에서, 조각과 영역 상단 사이의 **trim 공간**에 이후 영역의 소형 그룹을 이동시킵니다.
+
+### 조건
 
 ```python
-def _pack_multi_group_region(self, region, region_id, region_index,
-                             is_first_region, is_last_region):
-    cuts = []
+trim_height = row_height - piece_h - 2 * kerf  # 실제 사용 가능 높이
 
-    # 자투리 영역 처리
-    if region['type'] == 'scrap':
-        if not is_first_region:
-            cuts.append({'priority': 1, 'type': 'scrap_boundary', ...})
-        return placed, cuts
-
-    # Priority 1: 영역 경계 (첫 영역 제외)
-    if not is_first_region:
-        cuts.append({'priority': 1, 'type': 'region_boundary', ...})
-
-    # Priority 2: 영역 상단 자투리 trim
-    if abs(max_required_h - max_height) > 1:
-        cuts.append({'priority': 2, 'type': 'region_trim', ...})
-
-    # Priority 3: 그룹 경계 절단
-    if abs(curr_h - next_h) > 1:
-        cuts.append({'priority': 3, 'type': 'group_boundary', ...})
-
-    # Priority 4: 그룹별 개별 trim
-    if abs(left_h - max_required_h) > 1:
-        cuts.append({'priority': 4, 'type': 'group_trim', ...})
-
-    # Priority 5: 조각 분리 + 우측 자투리 (sub_priority로 구분)
-    for i in range(len(sorted_pieces) - 1):
-        if i != group_boundary_idx:
-            cuts.append({'priority': 5, 'sub_priority': 1,
-                        'type': 'piece_separation', ...})
-
-    if region_x_end - last_x_end > self.kerf:
-        cuts.append({'priority': 5, 'sub_priority': 2,
-                    'type': 'right_trim', ...})
-
-    return placed, cuts
+# skip 조건:
+# 1. trim_height < kerf (kerf보다 작은 공간에는 어떤 조각도 배치 불가)
+# 2. 같은 행에 piece_h < G < row_height - kerf 인 중간 높이 그룹 존재
+#    (해당 그룹의 H컷이 trim 공간을 관통하게 됨)
 ```
 
-**참조**: `src/woodcut/strategies/region_based.py`의 `_pack_multi_group_region()` 메서드
+### 동작
+
+이후 영역에서 `lpiece_h <= trim_height`를 만족하는 그룹을 찾아 `trim_rows`로 이동합니다.
+이동 후 빈 영역은 `scrap`으로 전환하고, 연속된 `scrap` 영역은 병합합니다.
 
 ---
 
-#### 우선순위 정렬 및 길로틴 순서 보장
+## 4단계: 영역별 배치 및 절단선 생성 (`_pack_multi_group_region`)
+
+### 조각 배치
+
+각 영역의 행(`rows`)을 순회하며 조각을 배치합니다.
+
+**가로 배치 (stacked=False)**:
+```python
+for _ in range(count):
+    placed.append({'x': current_x, 'y': current_y + y_offset, ...})
+    current_x += piece_w + kerf
+```
+
+**세로 배치 (stacked=True)**:
+```python
+for i in range(count):
+    piece_y = current_y + i * (piece_h + kerf)
+    placed.append({'x': current_x, 'y': piece_y, ...})
+current_x += piece_w + kerf
+```
+
+**trim_rows 조각** (trim 최적화로 이동된 조각들):
+```python
+trim_y = current_y + trim_row['y_offset']  # piece_h + kerf
+```
+
+### 절단선 생성 우선순위
+
+```
+priority 1                     : 영역 경계 (region_boundary / scrap_boundary)
+priority region_priority_base + 5  : 행(tier) 경계
+priority region_priority_base + 10 : 영역 상단 자투리 trim (region_trim)
+priority region_priority_base + 20 : 세로 배치(stacked) V trim + H 분리
+priority region_priority_base + 20 + group_idx * 10 :
+    - 조각 간 분리 (piece_separation, sub_priority=1)
+    - 행 끝 우측 trim (right_trim, sub_priority=2)
+    - 그룹 경계 (group_boundary)
+    - 다음 그룹 높이 trim (group_trim)
+priority region_priority_base + 23 : 2차 행 trim (secondary_row_trim)
+```
+
+`region_priority_base = region_index * 100`이므로 영역 0, 1, 2... 순서가 자연히 보장됩니다.
+
+### 절단선 정렬 키
 
 ```python
 def sort_key(cut):
-    priority = cut.get('priority', 100)
-    region_idx = cut.get('region_index', 0)
-    sub_priority = cut.get('sub_priority', 0)
-    position = cut.get('position', 0)
-
-    if priority == 1:
-        # 영역 경계: position만 고려 (위→아래 순)
-        return (priority, position, 0, 0)
-    else:
-        # 영역 내부: region_index → sub_priority → position
-        # 한 영역 완료 후 다음 영역
-        return (priority, region_idx, sub_priority, position)
+    if cut['priority'] == 1:        # 영역 경계: 전역 위치 순
+        return (1, cut['position'], 0, 0)
+    else:                           # 영역 내부: 영역 → 그룹 → 위치 순
+        return (cut['priority'], cut['region_index'], cut['sub_priority'], cut['position'])
 ```
 
-**결과:**
-- 영역 경계(priority 1) 모두 먼저 실행 → 길로틴 원칙 준수
-- 각 영역별로 절단 완료 후 다음 영역 진행
-- 조각 분리와 우측 trim이 같은 영역 내에서 혼합 실행
+**결과**: 모든 영역 경계(priority 1)가 먼저, 그 다음 영역 0 내부 → 영역 1 내부... 순으로 실행됩니다.
 
 ---
 
-## 알고리즘 동작 예시 (11개 조각)
+## 동작 예시 (표준 11개 조각 테스트)
 
 ### 입력
 
 ```python
 pieces = [
-    (800, 310, 2),   # 800×310mm 2개
-    (644, 310, 3),   # 644×310mm 3개
-    (371, 270, 4),   # 371×270mm 4개
-    (369, 640, 2),   # 369×640mm 2개 (회전 가능)
+    (800, 310, 2),
+    (644, 310, 3),
+    (371, 270, 4),
+    (369, 640, 2),
 ]
+plate = 2440 × 1220mm, kerf = 5mm
 ```
 
-### 백트래킹 결과
+### 백트래킹 결과 (회전 허용)
 
-- **영역 0**: 640×369 (2개, 회전) + 270×371 (4개, 회전)
-- **영역 1**: 644×310 (3개)
-- **영역 2**: 800×310 (2개)
-- **영역 3 (scrap)**: 상단 자투리 (214mm)
+| 영역 | y 위치 | 높이 | 그룹 구성 |
+|------|--------|------|-----------|
+| R1   | 0      | 374  | 640×369 (2개) + 270×371 (4개) |
+| R2   | 374    | 315  | 644×310 (3개) |
+| R3   | 689    | 315  | 800×310 (2개) |
+| scrap| 1004   | 216  | 자투리 |
 
-### 절단 순서 (15개)
-
-```
-Tier 1 - Priority 1 (영역 경계):
-1. 수평  376mm  (영역0→영역1 경계)
-2. 수평  691mm  (영역1→영역2 경계)
-3. 수평 1006mm  (영역2→자투리 경계)
-
-Tier 2 - 영역0 처리 (Priority 2-5, region_index=0):
-4. 수직 1285mm  (그룹 경계: 640×369 | 270×371)
-5. 수평  369mm  (좌측 그룹 trim)
-6. 수직  640mm  (조각 분리)
-7. 수직 1285mm  (조각 분리)
-8. 수직 1605mm  (우측 자투리 trim)
-
-Tier 2 - 영역1 처리 (Priority 2-5, region_index=1):
-9. 수직  644mm  (조각 분리)
-10. 수직 1293mm  (조각 분리)
-11. 수직 1942mm  (우측 자투리 trim)
-
-Tier 2 - 영역2 처리 (Priority 2-5, region_index=2):
-12. 수직  800mm  (조각 분리)
-13. 수직 1560mm  (조각 분리)
-14. 수직 1835mm  (조각 분리)
-15. 수직 2385mm  (우측 자투리 trim)
-```
-
-### 핵심 특징
-
-- ✅ **길로틴 원칙 준수**: 영역 경계(1-3번)가 최우선 실행
-- ✅ **영역별 완료**: 영역0 → 영역1 → 영역2 순차 처리
-- ✅ **자투리 처리**: 상단 자투리 영역 + 각 영역 우측 trim
-- ✅ **조각 분리와 trim 혼합**: 같은 priority 5 내에서 sub_priority로 구분
-
----
-
-## Two-Tier Priority System 상세
-
-### 문제점 (이전 방식)
+### 절단 순서 구조
 
 ```
-첫 영역은 boundary 없음 → 내부를 먼저 자름
-→ 다음 영역 boundary를 나중에 자름
-→ 길로틴 원칙 위반!
-```
+[Priority 1] 영역 경계 (위→아래):
+  H @ y=374  (R1→R2 경계)
+  H @ y=689  (R2→R3 경계)
+  H @ y=1004 (R3→자투리 경계)
 
-### 해결 (Two-Tier)
+[R1 내부, priority 100+]:
+  V @ x=1285  (그룹 경계: 640×369 | 270×371)
+  H @ y=369   (우측 그룹 trim, group_trim)
+  V @ x=640   (조각 분리, 640×369 그룹)
+  V @ x=1285  (조각 분리, 640×369 그룹)
+  V @ x=1605  (우측 자투리 trim, right_trim)
+  ...
 
-```python
-# Tier 1 (전역): 영역 경계 분리
-priority = region_index (1, 2, 3, ...)
-
-# Tier 2 (지역): 영역 내부 절단
-priority = region_priority_base + offset
-  - region_priority_base = region_index * 100
-  - offset:
-      +10: 영역 상단 자투리 trim (수평)
-      +20: group0 조각 분리 + 경계 + trim
-      +21: group0 boundary
-      +22: group0 trim
-      +30: group1 조각 분리...
-```
-
-### 정렬 키
-
-```python
-(priority, sub_priority, position)
-```
-
-### 실행 순서
-
-```
-P1, P2, P3 (모든 영역 boundaries)
-→ P10, P20, P21, ... (영역0 내부)
-→ P110, P120, P121, ... (영역1 내부)
-→ P210, P220, P221, ... (영역2 내부)
-```
-
-**결과**: 완벽한 길로틴 순서 보장
-
----
-
-## 코딩 스타일 (Python 3.10+)
-
-### 타입 힌트
-
-```python
-def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
-    ...
-```
-
-### match-case
-
-```python
-match cut['type']:
-    case 'horizontal':
-        process_horizontal(cut)
-    case 'vertical':
-        process_vertical(cut)
-```
-
-### walrus 연산자
-
-```python
-if (req_h := piece.get('height')) > max_height:
-    ...
+[R2 내부, priority 200+]:
+  V @ x=644   (조각 분리)
+  V @ x=1293  (조각 분리)
+  V @ x=1942  (우측 자투리 trim)
+  ...
 ```
 
 ---
 
-## 다단 배치 (Multi-Tier, 선택적)
+## 폴백 전략
 
-**현재 상태**: 계획 단계
+백트래킹이 실패하면 (`regions == []`) AlignedFreeSpace 방식을 사용합니다.
 
-옵션 활성화 시 남은 공간에 추가 행을 배치하여 공간 활용률을 향상시키는 기능입니다.
+```python
+plate = {'free_spaces': [FreeSpace(0, 0, plate_w, plate_h)]}
+for piece in remaining_pieces:
+    placement = _find_best_placement_simple(free_spaces, placed, piece)
+    if placement:
+        _apply_placement(free_spaces, placed, piece, placement)
+generate_guillotine_cuts(plate)  # packing.py의 FSM 절단 알고리즘 사용
+```
 
-**핵심 개념:**
-- 같은 높이 → 같은 영역 (최우선)
-- 남은 공간 > threshold → 추가 행 배치 (보수적)
-- 각 행은 독립적인 수평 절단선으로 분리 (Guillotine 준수)
+---
 
-**상세**: [.solution/002-20260104-multi-tier-placement.md](../.solution/002-20260104-multi-tier-placement.md)
+## FSM 절단 알고리즘 (`_split_region`, packing.py)
+
+폴백 경로에서 `generate_guillotine_cuts()`가 호출할 때 사용되는 재귀 FSM입니다.
+5개 Phase를 순서대로 시도하며, 조건이 맞는 첫 번째 절단선을 실행하고 재귀합니다.
+
+```
+Phase 0  : required_cuts 우선 실행 (배치 단계 힌트)
+Phase 1-1: Height Boundary Separation (required_h가 다른 경계 → V cut)
+Phase 1-2: Height Trimming (placed_h != required_h → H 또는 V cut)
+Phase 2-1: Width Boundary Separation (required_w가 다른 경계 → H cut)
+Phase 2-2: Width Trimming (placed_w != required_w → V 또는 H cut)
+Phase 3  : Final Separation (조각 경계 kerf 위치 → V/H cut)
+DONE     : 조각 1개이고 placed_w/h가 정확
+```
+
+각 Phase에서 절단 실행 시 (`_execute_cut_and_recurse`):
+1. 절단선을 `cuts`에 추가
+2. Trimming cut이면 관련 조각의 `placed_w` 또는 `placed_h` 업데이트
+3. 영역을 두 서브영역으로 분리하고 각각 재귀 호출
+
+---
+
+## 핵심 데이터 구조
+
+### 조각 (piece)
+
+```python
+{
+    'width': 800,        # 원본 너비
+    'height': 310,       # 원본 높이
+    'x': 0,              # 배치 x 좌표 (글로벌)
+    'y': 0,              # 배치 y 좌표 (글로벌)
+    'rotated': False,    # 회전 여부
+    'placed_w': 800,     # 실제 너비 (트림 후, _pack_multi_group_region 말미에 설정)
+    'placed_h': 310,     # 실제 높이
+    'id': 0,
+    'original': (800, 310)
+}
+```
+
+### 영역 (region)
+
+```python
+{
+    'type': 'horizontal',  # 'horizontal' | 'scrap'
+    'id': 'R1',
+    'x': 0, 'y': 0,
+    'width': 2440, 'height': 374,
+    'max_height': 369,     # 가장 높은 그룹의 높이 (kerf 제외)
+    'rows': [
+        {
+            'height': 374,
+            'groups': [
+                {
+                    'original_size': (369, 640),
+                    'rotated': False,
+                    'count': 2,
+                    'stacked': False,
+                    'trim_rows': [...]  # trim 최적화 결과
+                },
+                ...
+            ]
+        }
+    ]
+}
+```
+
+### 절단선 (cut)
+
+```python
+{
+    'direction': 'H',      # 'H' (수평) | 'V' (수직)
+    'position': 374,       # 절단 위치 (y 또는 x 좌표)
+    'start': 0,            # 절단선 시작 (반대 축)
+    'end': 2440,           # 절단선 끝
+    'priority': 1,         # 정렬 우선순위
+    'sub_priority': 0,
+    'region_index': 0,
+    'type': 'region_boundary',
+    'order': 1             # 최종 실행 순서 (정렬 후 부여)
+}
+```
 
 ---
 
 ## 참고
 
-상세 구현은 다음 파일 참조:
-- `src/woodcut/strategies/region_based.py` - 메인 알고리즘
-- `src/woodcut/packing.py` - Guillotine Cut FSM (현재 미사용)
-- `src/woodcut/visualizer.py` - 시각화
-
-솔루션 문서:
-- [001: Guillotine 절단 통합](../.solution/001-20251231-guillotine-cutting-integration.md)
-- [002: 다단 배치](../.solution/002-20260104-multi-tier-placement.md)
+- `src/woodcut/strategies/region_based.py` — 메인 패킹 알고리즘
+- `src/woodcut/packing.py` — 베이스 클래스 + FSM 절단 알고리즘 (폴백 경로)
+- `src/woodcut/visualizer.py` — 배치 및 절단선 시각화
+- `.solution/003-20260110-verification-checklist.md` — 검증 체크리스트
