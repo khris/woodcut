@@ -75,3 +75,22 @@ def test_stock_count_respected():
     )
     plates = packer.pack([(2000, 1000, 5)])
     assert len(plates) == 1, f"원판 1장만 사용해야 하는데 {len(plates)}장"
+
+
+def test_bias_prefers_one_large_plate_over_many_small():
+    """한 장의 큰 원판에 모두 들어가는 케이스 — 작은 원판 여러 장을 쓰면 안 됨.
+
+    순수 utilization 기반이면 작은 원판에 빽빽이 채우는 쪽이 이기기 쉬움.
+    pieces_placed 우선 편향이 제대로 작동하면 큰 원판 1장으로 끝내야 함.
+    """
+    packer = RegionBasedPacker(
+        [(2440, 1220, 1), (600, 400, 5)],
+        kerf=5,
+        allow_rotation=True,
+    )
+    plates = packer.pack([(500, 400, 4), (300, 200, 3)])
+
+    placed = sum(len(p['pieces']) for p in plates)
+    assert placed == 7, f"{placed}/7 배치"
+    assert len(plates) == 1, f"큰 원판 1장이면 충분한데 {len(plates)}장 사용"
+    assert plates[0]['width'] == 2440, "큰 원판을 선택해야 함"
