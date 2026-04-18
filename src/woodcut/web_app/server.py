@@ -34,10 +34,16 @@ class PieceInput(BaseModel):
     count: int
 
 
+class StockInput(BaseModel):
+    """원판 입력 모델"""
+    width: int
+    height: int
+    count: int
+
+
 class CuttingRequest(BaseModel):
     """재단 요청 모델"""
-    plate_width: int = 2440
-    plate_height: int = 1220
+    stocks: list[StockInput]
     kerf: int = 5
     allow_rotation: bool = True
     strategy: str = "region_based"
@@ -62,31 +68,21 @@ async def read_root():
 @app.post("/api/cut", response_model=CuttingResponse)
 async def calculate_cutting(request: CuttingRequest):
     """재단 계획 계산 API"""
+    if not request.pieces:
+        raise HTTPException(status_code=400, detail="조각 정보가 없습니다")
+    if not request.stocks:
+        raise HTTPException(status_code=400, detail="원판 정보가 없습니다")
+
     try:
-        # 입력 변환
         pieces = [(p.width, p.height, p.count) for p in request.pieces]
+        stocks = [(s.width, s.height, s.count) for s in request.stocks]
 
-        if not pieces:
-            raise HTTPException(status_code=400, detail="조각 정보가 없습니다")
-
-        # 전략 선택에 따라 패커 생성
         if request.strategy == "region_based_split":
-            packer = RegionBasedPackerWithSplit(
-                request.plate_width,
-                request.plate_height,
-                request.kerf,
-                request.allow_rotation,
-            )
+            packer = RegionBasedPackerWithSplit(stocks, request.kerf, request.allow_rotation)
         else:
-            packer = RegionBasedPacker(
-                request.plate_width,
-                request.plate_height,
-                request.kerf,
-                request.allow_rotation,
-            )
+            packer = RegionBasedPacker(stocks, request.kerf, request.allow_rotation)
         plates = packer.pack(pieces)
 
-        # 통계 계산
         total_pieces = sum(p.count for p in request.pieces)
         placed_pieces = sum(len(plate['pieces']) for plate in plates)
 
@@ -95,9 +91,10 @@ async def calculate_cutting(request: CuttingRequest):
             total_pieces=total_pieces,
             placed_pieces=placed_pieces,
             plates_used=len(plates),
-            plates=plates
+            plates=plates,
         )
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
