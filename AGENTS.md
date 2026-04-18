@@ -278,6 +278,18 @@ def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
 - 예시 코드 포함
 - 사용 방법, 주의사항 명시
 
+### `.solution/` 디자인·플랜 문서
+
+- 비자명한 변경(새 기능, 알고리즘 수정, 데이터 구조 변경, 다중 콜사이트 버그 수정)을 할 때는 **반드시** `.solution/NNN-YYYYMMDD-slug.md` 문서를 남긴다
+- 세부 규약·템플릿은 `.claude/skills/solution-doc/SKILL.md` 참조 (에이전트는 자동 활성화됨)
+- 임시 플랜(`~/.claude/plans/`)이 아니라 repo에 커밋되는 영구 기록
+
+### 웹 UI 검증
+
+- 웹 UI는 **Pyodide 기반 정적 사이트** — FastAPI는 정적 파일만 서빙하고 실제 계산은 브라우저 안 Python에서 수행
+- Chrome MCP로 E2E 검증할 때 `read_page`·`form_input`이 `still loading`으로 막히는 경우가 많음
+- 우회 전략은 `.claude/skills/woodcut-chrome-e2e/SKILL.md` 참조
+
 ---
 
 ## 성능 고려사항
