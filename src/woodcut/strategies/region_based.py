@@ -11,6 +11,30 @@ from __future__ import annotations
 from ..packing import PackingStrategy, FreeSpace
 
 
+def select_best_stock(
+    candidates: list[tuple[int, int, float]]
+) -> int | None:
+    """사전식 비교로 최적 stock index 선택.
+
+    Args:
+        candidates: [(stock_index, pieces_placed, utilization), ...]
+
+    Returns:
+        최고 후보의 stock_index, 후보 없으면 None.
+
+    규칙:
+        1차: pieces_placed 내림차순
+        2차: utilization 내림차순
+        3차: 입력 순서(작은 index) — max가 후행 동점을 덮어쓰지 않게 처리
+    """
+    if not candidates:
+        return None
+
+    # max()는 동점 시 앞의 것을 유지 — (pieces, util) 역순 비교로 OK
+    best = max(candidates, key=lambda c: (c[1], c[2]))
+    return best[0]
+
+
 class RegionBasedPacker(PackingStrategy):
     """전략 6: 높이/너비 혼합 그룹화 패킹
 
