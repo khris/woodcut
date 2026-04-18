@@ -1,4 +1,6 @@
 """멀티 stock 통합 테스트 — 회귀/신규/편향/엣지."""
+import pytest
+
 from woodcut.strategies.region_based import RegionBasedPacker
 
 
@@ -94,3 +96,40 @@ def test_bias_prefers_one_large_plate_over_many_small():
     assert placed == 7, f"{placed}/7 배치"
     assert len(plates) == 1, f"큰 원판 1장이면 충분한데 {len(plates)}장 사용"
     assert plates[0]['width'] == 2440, "큰 원판을 선택해야 함"
+
+
+def test_empty_stocks_raises():
+    """stocks 비면 즉시 에러."""
+    with pytest.raises(ValueError, match="최소 1개"):
+        RegionBasedPacker([], kerf=5, allow_rotation=True)
+
+
+def test_invalid_stock_raises():
+    """음수/0 stock 거부."""
+    with pytest.raises(ValueError, match="양수"):
+        RegionBasedPacker([(2440, 1220, 0)], kerf=5, allow_rotation=True)
+    with pytest.raises(ValueError, match="양수"):
+        RegionBasedPacker([(-100, 1220, 1)], kerf=5, allow_rotation=True)
+
+
+def test_piece_larger_than_all_stocks():
+    """모든 stock보다 큰 조각: 배치 실패 + 조기 종료 (무한루프 아님)."""
+    packer = RegionBasedPacker(
+        [(1000, 500, 3)], kerf=5, allow_rotation=True,
+    )
+    plates = packer.pack([(2000, 1000, 1)])
+    placed = sum(len(p['pieces']) for p in plates)
+    assert placed == 0
+
+
+def test_stock_exhaustion_reports_unplaced():
+    """Stock 고갈 시 남은 조각은 배치 안 됨."""
+    packer = RegionBasedPacker(
+        [(600, 400, 1)],
+        kerf=5,
+        allow_rotation=True,
+    )
+    plates = packer.pack([(500, 300, 10)])
+    placed = sum(len(p['pieces']) for p in plates)
+    assert placed < 10, "1장에 다 못 들어감"
+    assert len(plates) == 1
