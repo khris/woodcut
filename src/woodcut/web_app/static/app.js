@@ -2,6 +2,44 @@
 let pyodide = null;
 let packerReady = false;
 
+// 원판 상태 관리
+let stocks = [];
+
+function addStockRow(width = 2440, height = 1220, count = 1) {
+    stocks.push({
+        id: Date.now() + Math.random(),
+        width, height, count
+    });
+    renderStocks();
+}
+
+function removeStockRow(id) {
+    stocks = stocks.filter(s => s.id !== id);
+    renderStocks();
+}
+
+function renderStocks() {
+    const list = document.getElementById('stocksList');
+    list.innerHTML = '';
+    stocks.forEach(s => {
+        const row = document.createElement('div');
+        row.className = 'stock-row';
+        row.innerHTML = `
+            <input type="number" class="stock-width" min="1" value="${s.width}" placeholder="너비">
+            <span>×</span>
+            <input type="number" class="stock-height" min="1" value="${s.height}" placeholder="높이">
+            <span>×</span>
+            <input type="number" class="stock-count" min="1" value="${s.count}" placeholder="수량">
+            <button class="btn-remove" aria-label="삭제">✕</button>
+        `;
+        row.querySelector('.stock-width').addEventListener('input', e => s.width = parseInt(e.target.value) || 0);
+        row.querySelector('.stock-height').addEventListener('input', e => s.height = parseInt(e.target.value) || 0);
+        row.querySelector('.stock-count').addEventListener('input', e => s.count = parseInt(e.target.value) || 0);
+        row.querySelector('.btn-remove').addEventListener('click', () => removeStockRow(s.id));
+        list.appendChild(row);
+    });
+}
+
 // Pyodide 로드 및 초기화
 async function initPyodide() {
     showStatus('Python 환경 로딩 중...', 'loading');
@@ -48,6 +86,8 @@ async function initPyodide() {
 window.addEventListener('DOMContentLoaded', () => {
     initPyodide();
     loadUserPresets();
+    document.getElementById('addStockBtn').addEventListener('click', () => addStockRow());
+    addStockRow();  // 기본 1행 (2440×1220 1장)
 });
 
 // 프리셋 데이터
@@ -219,48 +259,50 @@ async function calculateCutting() {
 
     showStatus('계산 중...', 'loading');
 
-    // 입력 수집
-    const plateWidth = parseInt(document.getElementById('plateWidth').value);
-    const plateHeight = parseInt(document.getElementById('plateHeight').value);
     const kerf = parseInt(document.getElementById('kerf').value);
     const allowRotation = document.getElementById('allowRotation').checked;
     const strategy = document.getElementById('strategySelect').value;
 
     const pieces = [];
     const pieceRows = document.querySelectorAll('.piece-row');
-
     for (const row of pieceRows) {
         const width = parseInt(row.querySelector('.piece-width').value);
         const height = parseInt(row.querySelector('.piece-height').value);
         const count = parseInt(row.querySelector('.piece-count').value);
-
         if (width && height && count) {
             pieces.push([width, height, count]);
         }
     }
-
     if (pieces.length === 0) {
         showStatus('조각을 추가해주세요', 'error');
         return;
     }
 
+    // 원판 검증
+    if (stocks.length === 0) {
+        showStatus('원판을 최소 1개 추가해주세요', 'error');
+        return;
+    }
+    const invalidStock = stocks.find(s => s.width <= 0 || s.height <= 0 || s.count <= 0);
+    if (invalidStock) {
+        showStatus('원판 치수와 수량은 모두 양수여야 합니다', 'error');
+        return;
+    }
+
     try {
-        // Python에서 패킹 실행
         pyodide.globals.set('pieces_input', pieces);
-        pyodide.globals.set('plate_width', plateWidth);
-        pyodide.globals.set('plate_height', plateHeight);
+        pyodide.globals.set('stocks_input', stocks.map(s => [s.width, s.height, s.count]));
         pyodide.globals.set('kerf', kerf);
         pyodide.globals.set('allow_rotation', allowRotation);
-        // 전략 선택에 따라 다른 패커 사용
+
         const packerClass = strategy === 'region_based_split'
             ? 'RegionBasedPackerWithSplit'
             : 'RegionBasedPacker';
 
         const result = await pyodide.runPythonAsync(`
-packer = ${packerClass}(plate_width, plate_height, kerf, allow_rotation)
+packer = ${packerClass}(stocks_input, kerf, allow_rotation)
 plates = packer.pack(pieces_input)
 
-# 통계 계산
 total_pieces = sum(p[2] for p in pieces_input)
 placed_pieces = sum(len(plate['pieces']) for plate in plates)
 
@@ -275,8 +317,7 @@ placed_pieces = sum(len(plate['pieces']) for plate in plates)
 
         const data = result.toJs({dict_converter: Object.fromEntries});
 
-        // 결과 표시
-        displayResult(data, plateWidth, plateHeight, kerf);
+        displayResult(data, kerf);
         showStatus('계산 완료!', 'success');
 
     } catch (error) {
@@ -286,7 +327,7 @@ placed_pieces = sum(len(plate['pieces']) for plate in plates)
 }
 
 // 결과 표시
-function displayResult(data, plateWidth, plateHeight, kerf) {
+function displayResult(data, kerf) {
     const statsDiv = document.getElementById('resultStats');
     const visualDiv = document.getElementById('visualization');
 
@@ -307,12 +348,12 @@ function displayResult(data, plateWidth, plateHeight, kerf) {
         svgContainer.style.marginBottom = '30px';
 
         const title = document.createElement('h3');
-        title.textContent = `원판 ${plateIndex + 1}`;
+        title.textContent = `원판 ${plateIndex + 1} (${plate.width}×${plate.height}mm)`;
         title.style.textAlign = 'center';
         title.style.marginBottom = '10px';
         svgContainer.appendChild(title);
 
-        const svg = createPlateSVG(plate, plateWidth, plateHeight, kerf);
+        const svg = createPlateSVG(plate, plate.width, plate.height, kerf);
         svgContainer.appendChild(svg);
 
         visualDiv.appendChild(svgContainer);

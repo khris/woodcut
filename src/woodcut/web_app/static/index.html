@@ -37,21 +37,9 @@
                 <div class="panel-section">
                     <h2>재단 설정</h2>
 
-                    <div class="settings-grid">
-                        <div class="form-group">
-                            <label for="plateWidth">원판 너비 <span class="unit">mm</span></label>
-                            <input type="number" id="plateWidth" value="2440" min="100">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="plateHeight">원판 높이 <span class="unit">mm</span></label>
-                            <input type="number" id="plateHeight" value="1220" min="100">
-                        </div>
-
-                        <div class="form-group">
-                            <label for="kerf">톱날 두께 <span class="unit">mm</span></label>
-                            <input type="number" id="kerf" value="5" min="0">
-                        </div>
+                    <div class="form-group">
+                        <label for="kerf">톱날 두께 <span class="unit">mm</span></label>
+                        <input type="number" id="kerf" value="5" min="0">
                     </div>
 
                     <div class="form-group form-group--toggle">
@@ -87,6 +75,15 @@
                             <button class="btn-delete-preset" onclick="deleteCurrentPreset()" title="선택된 사용자 프리셋 삭제">삭제</button>
                         </div>
                     </div>
+                </div>
+
+                <div class="panel-section">
+                    <h3>보유 원판</h3>
+                    <div id="stocksList"></div>
+                    <button type="button" class="btn-add" id="addStockBtn">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+                        원판 추가
+                    </button>
                 </div>
 
                 <div class="panel-section">

@@ -437,7 +437,7 @@ header p {
     counter-reset: piece-counter;
 }
 
-.piece-row {
+.piece-row, .stock-row {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -452,11 +452,11 @@ header p {
     animation: slideUp 0.25s var(--ease-out) both;
 }
 
-.piece-row:last-child {
+.piece-row:last-child, .stock-row:last-child {
     border-bottom: none;
 }
 
-.piece-row:hover {
+.piece-row:hover, .stock-row:hover {
     box-shadow: none;
 }
 
@@ -476,7 +476,22 @@ header p {
     letter-spacing: -0.02em;
 }
 
-.piece-row input {
+.stock-row::before {
+    content: '';
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    background: var(--sand-light);
+    border-radius: 50%;
+    background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 12 12' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Crect x='1' y='1' width='10' height='10' rx='1.5' stroke='%238b7d6b' stroke-width='1.2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: center;
+    flex-shrink: 0;
+}
+
+.piece-row input, .stock-row input {
     padding: 7px 8px;
     border: 1px solid var(--sand);
     border-radius: var(--radius-xs);
@@ -491,22 +506,28 @@ header p {
     text-align: center;
 }
 
-.piece-row input:focus {
+.piece-row input:focus, .stock-row input:focus {
     border-color: var(--oak);
     box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.1);
 }
 
-.piece-row input::placeholder {
+.piece-row input::placeholder, .stock-row input::placeholder {
     color: var(--driftwood-light);
     font-weight: 400;
     font-size: 12px;
 }
 
-.piece-row span {
+.piece-row span, .stock-row span {
     color: var(--sand);
     font-weight: 300;
     font-size: 14px;
     flex-shrink: 0;
+}
+
+/* stocksList counter 독립 */
+#stocksList {
+    margin-bottom: 12px;
+    counter-reset: stock-counter;
 }
 
 .btn-remove {
@@ -836,7 +857,7 @@ footer p {
         grid-template-columns: 1fr;
     }
 
-    .piece-row input {
+    .piece-row input, .stock-row input {
         width: 56px;
     }
 
