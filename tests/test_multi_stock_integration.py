@@ -46,3 +46,32 @@ def test_plate_dict_has_dimensions():
     for p in plates:
         assert 'width' in p and 'height' in p
         assert p['width'] == 2440 and p['height'] == 1220
+
+
+def test_mixed_inventory_uses_both_stocks():
+    """혼합 재고: 큰 원판 1장으로 부족 → 작은 원판 보조 필요."""
+    packer = RegionBasedPacker(
+        [(2440, 1220, 1), (1000, 600, 5)],
+        kerf=5,
+        allow_rotation=True,
+    )
+    # 30개 × 400×300 = 3.6M mm² > 큰 원판 2.97M mm²
+    # 큰 원판 1장 + 작은 원판 일부가 필요
+    plates = packer.pack([(400, 300, 30)])
+
+    placed = sum(len(p['pieces']) for p in plates)
+    assert placed == 30, f"{placed}/30 배치"
+    sizes = {(p['width'], p['height']) for p in plates}
+    assert (2440, 1220) in sizes, "큰 원판이 사용되어야 함"
+    assert (1000, 600) in sizes, "작은 원판도 보조로 사용되어야 함"
+
+
+def test_stock_count_respected():
+    """Stock count를 초과해서 사용하지 않음."""
+    packer = RegionBasedPacker(
+        [(2440, 1220, 1)],
+        kerf=5,
+        allow_rotation=True,
+    )
+    plates = packer.pack([(2000, 1000, 5)])
+    assert len(plates) == 1, f"원판 1장만 사용해야 하는데 {len(plates)}장"
