@@ -100,4 +100,4 @@ def run_interactive():
     plates = packer.pack(pieces)
 
     # 시각화
-    visualize_solution(plates, pieces, plate_width, plate_height, strategy_name)
+    visualize_solution(plates, pieces, strategy_name)

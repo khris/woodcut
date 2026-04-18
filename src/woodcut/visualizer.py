@@ -30,14 +30,12 @@ def setup_korean_font():
     print("⚠️  한글 폰트를 찾지 못했습니다.")
 
 
-def visualize_solution(plates, pieces, plate_width, plate_height, strategy_name="unknown"):
+def visualize_solution(plates, pieces, strategy_name="unknown"):
     """시각화 함수
 
     Args:
         plates: 패킹 결과 (각 원판의 조각 배치 및 절단선 정보)
         pieces: 원본 조각 리스트 [(width, height, count), ...]
-        plate_width: 원판 너비 (mm)
-        plate_height: 원판 높이 (mm)
         strategy_name: 전략 이름 (파일명에 사용)
     """
     # 색상
@@ -98,7 +96,7 @@ def visualize_solution(plates, pieces, plate_width, plate_height, strategy_name=
         else:
             print("\n  ❌ 일부 조각이 부정확합니다")
 
-        ax.add_patch(MPLRect((0, 0), plate_width, plate_height,
+        ax.add_patch(MPLRect((0, 0), plate["width"], plate["height"],
                              fill=False, edgecolor='black', linewidth=2))
 
         total_area = 0
@@ -154,15 +152,15 @@ def visualize_solution(plates, pieces, plate_width, plate_height, strategy_name=
                        bbox=dict(boxstyle='circle,pad=0.3', facecolor='white',
                                 edgecolor='blue', linewidth=2))
 
-        usage = total_area / (plate_width * plate_height) * 100
+        usage = total_area / (plate["width"] * plate["height"]) * 100
         print(f"\n  사용률: {usage:.1f}%")
 
-        ax.set_xlim(0, plate_width)
-        ax.set_ylim(0, plate_height)
+        ax.set_xlim(0, plate["width"])
+        ax.set_ylim(0, plate["height"])
         ax.set_aspect('equal')
         ax.set_xlabel('가로 (mm)')
         ax.set_ylabel('세로 (mm)')
-        ax.set_title(f'원판 {plot_idx + 1} ({plate_width}×{plate_height})\n사용률: {usage:.1f}% | 절단: {len(plate["cuts"])}회',
+        ax.set_title(f'원판 {plot_idx + 1} ({plate["width"]}×{plate["height"]})\n사용률: {usage:.1f}% | 절단: {len(plate["cuts"])}회',
                     fontsize=12, fontweight='bold')
         ax.grid(True, alpha=0.3)
 
