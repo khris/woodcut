@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "woodcut-web",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "woodcut", "web"],
+      "port": 8000
+    }
+  ]
+}
