@@ -45,141 +45,66 @@ class RegionBasedPacker(PackingStrategy):
     - 작업 편의성: 같은 높이/너비 조각들이 그룹화
     """
 
-    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
-        super().__init__(plate_width, plate_height, kerf, allow_rotation)
-
     def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
-        """다중 그룹 영역 배치 패킹 (재설계)"""
+        """멀티 stock 패킹.
+
+        매 iteration마다:
+          1. 각 남은 stock 종류에 대해 1장 시뮬레이션
+          2. (pieces_placed, utilization) 사전식 최고 stock 선택
+          3. 해당 stock count 차감, 배치된 조각 제거
+        """
         all_pieces = self.expand_pieces(pieces)
         plates = []
         remaining_pieces = all_pieces[:]
+        # stock count 가변 복사 (원본 self.stocks는 유지)
+        stock_counts = [s[2] for s in self.stocks]
 
         plate_num = 1
+        while remaining_pieces and any(c > 0 for c in stock_counts):
+            print(f"\n=== 원판 {plate_num}: stock 선택 시뮬레이션 ===")
 
-        while remaining_pieces:
-            print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 시작 ===")
-            print(f"남은 조각: {len(remaining_pieces)}개")
-
-            # 1. 레벨 1: 정확히 같은 크기끼리 그룹화
-            groups = self._group_by_exact_size(remaining_pieces)
-
-            print(f"\n레벨 1: {len(groups)}개 그룹 생성")
-            for i, group in enumerate(groups):
-                print(f"  그룹 {i+1}: {group['size'][0]}×{group['size'][1]}mm, {group['count']}개 조각, 총 면적 {group['total_area']:,}mm²")
-
-            # 2. 각 그룹의 회전 옵션 생성
-            group_options = self._generate_group_options(groups)
-
-            # 3. 회전 옵션 평면화
-            all_variants = self._flatten_group_options(group_options)
-
-            # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
-            regions = self._allocate_anchor_backtrack(all_variants)
-
-            # ★ 영역 간 trim 최적화: 이후 영역 소형 그룹을 이전 영역 trim 공간으로 이동
-            if regions:
-                self._optimize_trim_placement(regions)
-
-            # 폴백 전략 사용 여부 판단
-            use_fallback = False
-            if not regions:
-                print("\n⚠️  백트래킹 실패, AlignedFreeSpace 폴백")
-                use_fallback = True
-
-            # 5. 폴백 또는 일반 배치
-            if use_fallback:
-                plate = {'pieces': [], 'cuts': [], 'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)]}
-                for piece in remaining_pieces:
-                    placement = self._find_best_placement_simple(plate['free_spaces'], plate['pieces'], piece)
-                    if placement:
-                        self._apply_placement(plate['free_spaces'], plate['pieces'], piece, placement)
-                self.generate_guillotine_cuts(plate)
-                plates.append(plate)
-                
-                # 폴백으로도 배치 못한 경우 무한 루프 방지
-                if not plate['pieces']:
-                    print("\n⚠️  폴백 전략으로도 배치 실패, 종료")
-                    break
-                
-                # 배치 성공 시 remaining_pieces 업데이트 후 다음 판으로
-                placed_sizes = {}
-                for p in plate['pieces']:
-                    size_key = (p['width'], p['height'])
-                    placed_sizes[size_key] = placed_sizes.get(size_key, 0) + 1
-
-                new_remaining = []
-                for piece in remaining_pieces:
-                    size_key = (piece['width'], piece['height'])
-                    if size_key in placed_sizes and placed_sizes[size_key] > 0:
-                        placed_sizes[size_key] -= 1
-                    else:
-                        new_remaining.append(piece)
-
-                remaining_pieces = new_remaining
-                plate_num += 1
-                continue
-
-            # 일반 배치: 각 영역 내 배치 및 절단선 생성
-            plate = {'pieces': [], 'cuts': [], 'free_spaces': []}
-
-            # 영역 ID 할당
-            for i, region in enumerate(regions):
-                region['id'] = f'R{i+1}'
-
-            # 각 영역 배치 + 절단선 생성
-            all_cuts = []
-            for i, region in enumerate(regions):
-                placed, cuts = self._pack_multi_group_region(
-                    region,
-                    region['id'],
-                    region_index=i,
-                    is_first_region=(i == 0),
-                    is_last_region=(i == len(regions) - 1),
-                    region_priority_base=i * 100
+            # 후보별 시뮬레이션
+            candidates = []  # (stock_index, pieces_placed, utilization, plate_dict)
+            for i, (w, h, _count) in enumerate(self.stocks):
+                if stock_counts[i] == 0:
+                    continue
+                self.plate_width = w
+                self.plate_height = h
+                trial = self._pack_single_plate(remaining_pieces)
+                placed = len(trial['pieces'])
+                total_placed_area = sum(
+                    p.get('placed_w', p['width']) * p.get('placed_h', p['height'])
+                    for p in trial['pieces']
                 )
-                if placed:
-                    plate['pieces'].extend(placed)
+                util = total_placed_area / (w * h) if w * h else 0.0
+                candidates.append((i, placed, util, trial))
+                print(f"  후보 {i}: {w}×{h} → {placed}개, util={util:.2%}")
 
-                # 절단선은 조각 유무와 관계없이 추가 (자투리 영역 포함)
-                if cuts:
-                    for cut in cuts:
-                        cut['region_index'] = i
-                    all_cuts.extend(cuts)
+            if not candidates:
+                print("⚠️  사용 가능 stock 없음")
+                break
 
-            # 절단선 우선순위 + 영역 순서 정렬
-            # Priority 1 (영역 경계): position 순 (위→아래)
-            # Priority 2-6 (영역 내부): region_index 순 → sub_priority 순 → position 순
-            def sort_key(cut):
-                priority = cut.get('priority', 100)
-                region_idx = cut.get('region_index', 0)
-                sub_priority = cut.get('sub_priority', 0)
-                position = cut.get('position', 0)
+            scored = [(c[0], c[1], c[2]) for c in candidates]
+            best_idx = select_best_stock(scored)
+            best_candidate = next(c for c in candidates if c[0] == best_idx)
+            _, best_placed, best_util, best_plate = best_candidate
+            best_w, best_h, _ = self.stocks[best_idx]
 
-                if priority == 1:  # 영역 경계: position만 고려
-                    return (priority, position, 0, 0)
-                else:  # 영역 내부: region_index → sub_priority → position
-                    return (priority, region_idx, sub_priority, position)
+            if best_placed == 0:
+                print("⚠️  어느 stock에도 배치 실패 — 종료")
+                break
 
-            all_cuts.sort(key=sort_key)
-            for idx, cut in enumerate(all_cuts):
-                cut['order'] = idx + 1
-                # region 정보 추가 (시각화용)
-                if 'region_x' not in cut:
-                    cut['region_x'] = 0
-                    cut['region_y'] = 0
-                    cut['region_w'] = self.plate_width
-                    cut['region_h'] = self.plate_height
-            plate['cuts'] = all_cuts
+            print(
+                f"✓ 선택: stock[{best_idx}] {best_w}×{best_h} "
+                f"({best_placed}개, {best_util:.2%})"
+            )
 
-            print(f"\n=== 원판 {plate_num}: 다중 그룹 영역 배치 완료 ===")
-            print(f"  배치된 조각: {len(plate['pieces'])}개")
-            print(f"  절단선: {len(plate['cuts'])}개\n")
+            plates.append(best_plate)
+            stock_counts[best_idx] -= 1
 
-            plates.append(plate)
-
-            # 7. 배치된 조각들을 remaining_pieces에서 제거
+            # 배치된 조각을 remaining에서 제거
             placed_sizes = {}
-            for p in plate['pieces']:
+            for p in best_plate['pieces']:
                 size_key = (p['width'], p['height'])
                 placed_sizes[size_key] = placed_sizes.get(size_key, 0) + 1
 
@@ -190,16 +115,110 @@ class RegionBasedPacker(PackingStrategy):
                     placed_sizes[size_key] -= 1
                 else:
                     new_remaining.append(piece)
-
             remaining_pieces = new_remaining
+
             plate_num += 1
 
-            # 무한 루프 방지
-            if plate_num > 10:
-                print("\n⚠️  최대 원판 수 초과 (10장)")
-                break
+        if remaining_pieces:
+            print(f"\n⚠️  미배치 조각 {len(remaining_pieces)}개 — stock 부족 또는 크기 초과")
 
         return plates
+
+    def _pack_single_plate(self, remaining_pieces: list[dict]) -> dict:
+        """현재 self.plate_width/height 기준으로 원판 1장 패킹.
+
+        호출 측에서 self.plate_width/height를 사전에 세팅해야 함.
+        remaining_pieces는 수정하지 않음 — 반환된 plate['pieces']로 호출자가 차감.
+
+        Returns:
+            plate dict: {'width', 'height', 'pieces', 'cuts', 'free_spaces'}
+        """
+        # 1. 레벨 1: 정확히 같은 크기끼리 그룹화
+        groups = self._group_by_exact_size(remaining_pieces)
+
+        # 2. 각 그룹의 회전 옵션 생성
+        group_options = self._generate_group_options(groups)
+
+        # 3. 회전 옵션 평면화
+        all_variants = self._flatten_group_options(group_options)
+
+        # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
+        regions = self._allocate_anchor_backtrack(all_variants)
+
+        # 영역 간 trim 최적화
+        if regions:
+            self._optimize_trim_placement(regions)
+
+        # 폴백 판단
+        if not regions:
+            plate = {
+                'width': self.plate_width,
+                'height': self.plate_height,
+                'pieces': [],
+                'cuts': [],
+                'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)],
+            }
+            for piece in remaining_pieces:
+                placement = self._find_best_placement_simple(
+                    plate['free_spaces'], plate['pieces'], piece
+                )
+                if placement:
+                    self._apply_placement(
+                        plate['free_spaces'], plate['pieces'], piece, placement
+                    )
+            self.generate_guillotine_cuts(plate)
+            return plate
+
+        # 일반 배치
+        plate = {
+            'width': self.plate_width,
+            'height': self.plate_height,
+            'pieces': [],
+            'cuts': [],
+            'free_spaces': [],
+        }
+
+        for i, region in enumerate(regions):
+            region['id'] = f'R{i+1}'
+
+        all_cuts = []
+        for i, region in enumerate(regions):
+            placed, cuts = self._pack_multi_group_region(
+                region,
+                region['id'],
+                region_index=i,
+                is_first_region=(i == 0),
+                is_last_region=(i == len(regions) - 1),
+                region_priority_base=i * 100,
+            )
+            if placed:
+                plate['pieces'].extend(placed)
+
+            if cuts:
+                for cut in cuts:
+                    cut['region_index'] = i
+                all_cuts.extend(cuts)
+
+        # 절단선 정렬
+        def sort_key(cut):
+            priority = cut.get('priority', 100)
+            region_idx = cut.get('region_index', 0)
+            sub_priority = cut.get('sub_priority', 0)
+            position = cut.get('position', 0)
+            if priority == 1:
+                return (priority, position, 0, 0)
+            return (priority, region_idx, sub_priority, position)
+
+        all_cuts.sort(key=sort_key)
+        for idx, cut in enumerate(all_cuts):
+            cut['order'] = idx + 1
+            if 'region_x' not in cut:
+                cut['region_x'] = 0
+                cut['region_y'] = 0
+                cut['region_w'] = self.plate_width
+                cut['region_h'] = self.plate_height
+        plate['cuts'] = all_cuts
+        return plate
 
     
     

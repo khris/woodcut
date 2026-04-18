@@ -34,9 +34,28 @@ class FreeSpace:
 class PackingStrategy(ABC):
     """패킹 전략 베이스 클래스"""
 
-    def __init__(self, plate_width: int, plate_height: int, kerf: int = 5, allow_rotation: bool = True) -> None:
-        self.plate_width: int = plate_width
-        self.plate_height: int = plate_height
+    def __init__(
+        self,
+        stocks: list[tuple[int, int, int]],
+        kerf: int = 5,
+        allow_rotation: bool = True,
+    ) -> None:
+        """
+        Args:
+            stocks: [(width, height, count), ...] — 보유 원판 목록, count >= 1
+            kerf: 톱날 두께
+            allow_rotation: 조각 회전 허용 여부
+        """
+        if not stocks:
+            raise ValueError("stocks는 최소 1개 필요")
+        for w, h, c in stocks:
+            if w <= 0 or h <= 0 or c <= 0:
+                raise ValueError(f"stock ({w}, {h}, {c}): 모든 값은 양수여야 함")
+
+        self.stocks: list[tuple[int, int, int]] = stocks
+        # 현재 작업 중인 원판 크기 — pack() 내부에서 매 iteration 갱신
+        self.plate_width: int = stocks[0][0]
+        self.plate_height: int = stocks[0][1]
         self.kerf: int = kerf
         self.allow_rotation: bool = allow_rotation
 
