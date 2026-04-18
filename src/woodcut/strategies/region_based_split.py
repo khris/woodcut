@@ -6,7 +6,6 @@ RegionBasedPacker의 Fallback 전략:
 """
 
 from __future__ import annotations
-from ..packing import FreeSpace
 from .region_based import RegionBasedPacker
 
 
@@ -21,69 +20,58 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
     _pack_single_plate()만 오버라이드하여 분할 재시도 로직을 삽입.
     """
 
-    # __init__ 오버라이드 없음 — 부모 시그니처(stocks, kerf, allow_rotation) 그대로 사용
-
     def _pack_single_plate(self, remaining_pieces: list[dict]) -> dict:
         """원판 1장 패킹 (그룹 분할 폴백 포함).
 
         1차 시도: 정규 백트래킹
         2차 시도: 실패 시 큰 그룹 분할 후 재시도
-        분할 후에도 0개면 빈 plate 반환 — 부모 pack()이 중단 처리.
+
+        부모의 `FreeSpace` 기반 단순 폴백은 사용하지 않음 —
+        분할 재시도 실패 시 빈 pieces의 plate를 반환하여
+        부모 pack()이 stock 소진/중단 판단하게 한다.
 
         Returns:
             plate dict: {'width', 'height', 'pieces', 'cuts', 'free_spaces'}
         """
-        print(f"\n=== 원판: 다중 그룹 영역 배치 시작 (분할 지원) ===")
+        print("\n=== 원판: 다중 그룹 영역 배치 시작 (분할 지원) ===")
         print(f"남은 조각: {len(remaining_pieces)}개")
 
-        # 1. 정확히 같은 크기끼리 그룹화
         groups = self._group_by_exact_size(remaining_pieces)
 
         print(f"\n레벨 1: {len(groups)}개 그룹 생성")
         for i, group in enumerate(groups):
             print(f"  그룹 {i+1}: {group['size'][0]}×{group['size'][1]}mm, {group['count']}개 조각, 총 면적 {group['total_area']:,}mm²")
 
-        # ★ 1차 시도: 분할 없이 백트래킹 (회전 옵션 포함)
+        # 1차 시도: 분할 없이 백트래킹
         plate = self._try_pack_groups(groups)
+        if plate['pieces']:
+            self._print_plate_summary(plate)
+            return plate
 
-        # ★ 2차 시도: 배치 실패 시 그룹 분할 후 재시도
-        if len(plate['pieces']) == 0:
-            print("\n⚠️  배치 실패, 큰 그룹 분할 후 재시도...")
+        # 2차 시도: 그룹 분할 후 재시도
+        print("\n⚠️  배치 실패, 큰 그룹 분할 후 재시도...")
+        groups = self._split_oversized_groups(groups)
+        print(f"분할 후 그룹 수: {len(groups)}개")
 
-            groups = self._split_oversized_groups(groups)
-            print(f"분할 후 그룹 수: {len(groups)}개")
+        plate = self._try_pack_groups(groups)
+        if plate['pieces']:
+            self._print_plate_summary(plate)
+            return plate
 
-            plate = self._try_pack_groups(groups)
-
-            if len(plate['pieces']) == 0:
-                print("\n❌ 오류: 원판에 조각을 배치할 수 없습니다")
-                print(f"남은 조각: {len(remaining_pieces)}개")
-                for idx, piece in enumerate(remaining_pieces[:3]):
-                    print(f"  {idx+1}. {piece['width']}×{piece['height']}mm")
-                if len(remaining_pieces) > 3:
-                    print(f"  ... 외 {len(remaining_pieces) - 3}개")
-
-        if len(plate['pieces']) > 0:
-            print(f"\n=== 원판: 다중 그룹 영역 배치 완료 ===")
-            print(f"  배치된 조각: {len(plate['pieces'])}개")
-            print(f"  절단선: {len(plate['cuts'])}개\n")
-
-            placed_sizes_count = {}
-            for p in plate['pieces']:
-                size_key = (p['width'], p['height'])
-                placed_sizes_count[size_key] = placed_sizes_count.get(size_key, 0) + 1
-
-            print(f"\n=== 배치 검증 ===")
-            for size_key, count in placed_sizes_count.items():
-                print(f"  {size_key[0]}×{size_key[1]}: {count}개 배치")
-
+        # 분할 후에도 실패 — 빈 plate 반환
+        print("\n❌ 오류: 원판에 조각을 배치할 수 없습니다")
+        print(f"남은 조각: {len(remaining_pieces)}개")
+        for idx, piece in enumerate(remaining_pieces[:3]):
+            print(f"  {idx+1}. {piece['width']}×{piece['height']}mm")
+        if len(remaining_pieces) > 3:
+            print(f"  ... 외 {len(remaining_pieces) - 3}개")
         return plate
 
     def _try_pack_groups(self, groups: list[dict]) -> dict:
-        """그룹 배치 시도.
+        """그룹 리스트로부터 plate 1장 구성 시도.
 
-        Args:
-            groups: 그룹 리스트
+        백트래킹 실패 시 pieces가 비어 있는 plate dict 반환 —
+        호출 측에서 `not plate['pieces']`로 실패 판정.
 
         Returns:
             plate dict: {'width', 'height', 'pieces', 'cuts', 'free_spaces'}
@@ -103,67 +91,34 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
             }
 
         self._optimize_trim_placement(regions)
+        return self._build_plate_from_regions(regions)
 
-        plate = {
-            'width': self.plate_width,
-            'height': self.plate_height,
-            'pieces': [],
-            'cuts': [],
-            'free_spaces': [],
-        }
+    def _print_plate_summary(self, plate: dict) -> None:
+        """배치 완료 로그 + 크기별 배치 개수 검증 출력."""
+        print("\n=== 원판: 다중 그룹 영역 배치 완료 ===")
+        print(f"  배치된 조각: {len(plate['pieces'])}개")
+        print(f"  절단선: {len(plate['cuts'])}개\n")
 
-        for i, region in enumerate(regions):
-            region['id'] = f'R{i+1}'
+        placed_sizes_count: dict[tuple[int, int], int] = {}
+        for p in plate['pieces']:
+            size_key = (p['width'], p['height'])
+            placed_sizes_count[size_key] = placed_sizes_count.get(size_key, 0) + 1
 
-        all_cuts = []
-        for i, region in enumerate(regions):
-            placed, cuts = self._pack_multi_group_region(
-                region,
-                region['id'],
-                region_index=i,
-                is_first_region=(i == 0),
-                is_last_region=(i == len(regions) - 1),
-                region_priority_base=i * 100
-            )
-            if placed:
-                plate['pieces'].extend(placed)
-
-            if cuts:
-                for cut in cuts:
-                    cut['region_index'] = i
-                all_cuts.extend(cuts)
-
-        def sort_key(cut):
-            priority = cut.get('priority', 100)
-            region_idx = cut.get('region_index', 0)
-            sub_priority = cut.get('sub_priority', 0)
-            position = cut.get('position', 0)
-
-            if priority == 1:
-                return (priority, position, 0, 0)
-            else:
-                return (priority, region_idx, sub_priority, position)
-
-        all_cuts.sort(key=sort_key)
-        for idx, cut in enumerate(all_cuts):
-            cut['order'] = idx + 1
-            if 'region_x' not in cut:
-                cut['region_x'] = 0
-                cut['region_y'] = 0
-                cut['region_w'] = self.plate_width
-                cut['region_h'] = self.plate_height
-        plate['cuts'] = all_cuts
-
-        return plate
+        print("\n=== 배치 검증 ===")
+        for size_key, count in placed_sizes_count.items():
+            print(f"  {size_key[0]}×{size_key[1]}: {count}개 배치")
 
     def _split_oversized_groups(self, groups: list[dict]) -> list[dict]:
-        """한 행에 들어가지 않는 그룹을 자동 분할 (회전 및 세로 쌓기 고려)
+        """한 행에 들어가지 않는 그룹을 자동 분할.
+
+        각 분할 조각은 원본 pieces 리스트의 슬라이스 참조를 공유 —
+        조각 총 개수는 보존된다.
 
         Args:
             groups: 그룹 리스트
 
         Returns:
-            분할된 그룹 리스트
+            분할된 그룹 리스트 (원본 그룹 순서 유지, 분할분은 순차 삽입)
         """
         result = []
 
@@ -172,13 +127,13 @@ class RegionBasedPackerWithSplit(RegionBasedPacker):
             count = group['count']
             pieces = group['pieces']
 
-            # 1. 수평 배치 (비회전): w×h 그대로
+            # 수평 배치 (비회전): w×h 그대로
             max_horizontal = (self.plate_width + self.kerf) // (w + self.kerf) if h <= self.plate_height else 0
 
-            # 2. 수평 배치 (회전): h×w로 회전, 회전 허용 시
+            # 수평 배치 (회전): h×w 로 회전, 회전 허용 시
             max_rotated = (self.plate_width + self.kerf) // (h + self.kerf) if self.allow_rotation and w <= self.plate_height else 0
 
-            # 최대값 선택 (회전 vs 비회전 중 더 많이 들어가는 쪽)
+            # 회전 vs 비회전 중 더 많이 들어가는 쪽
             if max_rotated > max_horizontal:
                 max_count = max_rotated
                 best_option = 'rotated'

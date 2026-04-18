@@ -174,7 +174,17 @@ class RegionBasedPacker(PackingStrategy):
             self.generate_guillotine_cuts(plate)
             return plate
 
-        # 일반 배치
+        return self._build_plate_from_regions(regions)
+
+    def _build_plate_from_regions(self, regions: list[dict]) -> dict:
+        """regions → plate dict 변환.
+
+        자식 클래스와 공유되는 "영역 배치 → 조각/절단선 조립" 로직.
+        regions는 비어 있지 않다고 가정 (호출 측 책임).
+
+        Returns:
+            plate dict: {'width', 'height', 'pieces', 'cuts', 'free_spaces'}
+        """
         plate = {
             'width': self.plate_width,
             'height': self.plate_height,
@@ -204,7 +214,6 @@ class RegionBasedPacker(PackingStrategy):
                     cut['region_index'] = i
                 all_cuts.extend(cuts)
 
-        # 절단선 정렬
         def sort_key(cut):
             priority = cut.get('priority', 100)
             region_idx = cut.get('region_index', 0)
