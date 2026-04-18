@@ -94,6 +94,11 @@ class RegionBasedPacker(PackingStrategy):
                 print("⚠️  어느 stock에도 배치 실패 — 종료")
                 break
 
+            # 선택된 stock의 dimension으로 self 상태 복원
+            # (후보 시뮬레이션 중 마지막 후보 dim으로 오염된 상태를 정리)
+            self.plate_width = best_w
+            self.plate_height = best_h
+
             print(
                 f"✓ 선택: stock[{best_idx}] {best_w}×{best_h} "
                 f"({best_placed}개, {best_util:.2%})"
