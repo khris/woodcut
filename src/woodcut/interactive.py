@@ -42,16 +42,41 @@ def run_interactive():
     print("목재 재단 최적화 - Guillotine Cut")
     print("="*60)
 
-    # 원판 크기 입력
-    plate_width = get_positive_int_input("원판 너비 (mm, 기본값 2440): ", default=2440)
-    if plate_width is None:
-        return
+    # 보유 원판 입력 받기
+    print("\n[보유 원판 입력]")
+    print("입력을 마치려면 너비에 '0' 또는 엔터를 입력하세요. (최소 1개)")
+    stocks: list[tuple[int, int, int]] = []
+    while True:
+        idx = len(stocks) + 1
+        w = get_positive_int_input(
+            f"원판 {idx} 너비 (mm, 기본값 2440): ",
+            default=2440 if idx == 1 else None,
+        )
+        if w is None or w == 0:
+            if not stocks:
+                print("❌ 오류: 최소 한 개의 원판은 입력해야 합니다.")
+                continue
+            break
 
-    plate_height = get_positive_int_input("원판 높이 (mm, 기본값 1220): ", default=1220)
-    if plate_height is None:
-        return
+        h = get_positive_int_input(
+            f"원판 {idx} 높이 (mm, 기본값 1220): ",
+            default=1220 if idx == 1 else None,
+        )
+        if h is None:
+            print("❌ 높이 입력을 취소하고 다시 너비부터 입력합니다.")
+            continue
 
-    print(f"✓ 원판 크기: {plate_width}×{plate_height}mm")
+        c = get_positive_int_input(
+            f"원판 {idx} 수량 (장, 기본값 1): ", default=1
+        )
+        if c is None:
+            c = 1
+
+        stocks.append((w, h, c))
+        print(f"  + 원판 추가: {w}×{h}mm, {c}장")
+
+    total_plates = sum(s[2] for s in stocks)
+    print(f"✓ 총 {len(stocks)}종류, {total_plates}장 원판 보유")
 
     # 톱날 두께 입력
     kerf = get_positive_int_input("톱날 두께 (kerf, mm, 기본값 5): ", default=5)
@@ -93,7 +118,7 @@ def run_interactive():
         pieces.append((w, h, c))
         print(f"  + 조각 추가: {w}x{h}mm, {c}개")
 
-    packer = RegionBasedPacker(plate_width, plate_height, kerf, allow_rotation)
+    packer = RegionBasedPacker(stocks, kerf, allow_rotation)
     strategy_name = "region_based"
 
     # 패킹 실행
