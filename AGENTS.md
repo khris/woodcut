@@ -241,6 +241,19 @@ cut_y = y_start + max_height  # 일부 조각 잘못 자름!
 
 **올바른 방법:** 높이별로 서브그룹화 후 독립 절단선 생성
 
+### ❌ stacked 그룹을 "row 하나 + max_height"로 취급
+
+```python
+# 잘못된 예: stacked 여부를 확인하지 않고 trim 공간 계산
+trim_height = row_height - piece_h - 2 * self.kerf
+# stacked 그룹은 row_height 전체를 여러 조각으로 점유함 —
+# 위 식이 양수라도 그 공간은 두 번째(이후) 스택 조각이 이미 차지한다.
+# 여기에 trim 조각을 배치하면 물리적 겹침 발생.
+```
+
+**올바른 방법:** `group.get('stacked', False)` 면 그 column 위로 trim 공간을 가정하지 말 것.
+`_init_region_occupancy`가 region에 채워 둔 `occupied: list[Rect]`(stacked는 count개의 Rect로 기록)와 `intersects()`로 방어 검증할 수 있다. 관련 설계: [.solution/006-20260419-occupancy-hierarchical-backtracking.md](.solution/006-20260419-occupancy-hierarchical-backtracking.md).
+
 ---
 
 ## 문서화 규칙

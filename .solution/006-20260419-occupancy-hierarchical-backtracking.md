@@ -2,7 +2,7 @@
 
 - **작성일**: 2026-04-19
 - **작성자**: Hong Segi (khris@khrislog.net) + Claude
-- **상태**: 진행 중 (사용자 승인 2026-04-19)
+- **상태**: 구현 완료 (2026-04-19). P0 겹침 버그 해결, 22/22 테스트 pass. 아래 "구현 주석" 섹션 참조.
 - **관련 스펙**: `.solution/002-20260104-multi-tier-placement.md`, `.solution/003-20260110-verification-checklist.md`
 
 ## 1. 배경과 문제
@@ -166,3 +166,27 @@ echo -e "2440\n1220\n10\n\n5\nn\n560\n350\n2\n446\n50\n2\n369\n50\n2\n550\n450\n
   ↓ Cut 생성 (_pack_multi_group_region)       ← 유지 (line 706 한 줄만 수정)
   ↓ 시각화 + 검증 (겹침 검증 포함)
 ```
+
+## 10. 구현 주석 (2026-04-19 완료)
+
+실제로는 "전면 백트래킹 재작성"을 하지 않고 **minimal invasive** 로 끝냈다 — P0 겹침의 근본이 "stacked 그룹 위에 trim strip을 가정한 것" 하나에 모여 있었기 때문.
+
+**실제 변경**:
+
+1. `src/woodcut/strategies/rect.py` — 계획대로 추가
+2. `_init_region_occupancy` — 계획대로 추가 (stacked를 count개 Rect로 기록하는 핵심 로직 포함)
+3. `trim_rows` 스키마 — `x_offset` 선택 필드 추가, cut 생성 line 706 한 줄 반영
+4. `_optimize_trim_placement` — **재작성 안 함**. 아래 2점만:
+   - stacked anchor 그룹을 skip (겹침 근본 원인 제거)
+   - trim_rows 추가 전 `occupied` 교차 방어 assert (회귀 안전망)
+5. `tests/test_overlap_detection.py` — 계획대로. P0 케이스 pass.
+
+**왜 재작성을 생략했나**:
+- P0 3 케이스 + 기존 통합 테스트 22/22 전부 green — 기존 FFDH 유사 greedy로 충분
+- "한 줄 우선, 안 되면 여러 줄" 탐색은 `x_offset` 스키마만 심어 두면 후속 백트래킹 추가 시에도 cut 생성 로직 무변경
+- 탐색 공간 폭발·초기 lower bound 같은 리스크를 감수할 동기가 현 시점엔 없다
+
+**남은 작업 (후속)**:
+- Phase B 백트래킹: stacked column 최상단 조각 위까지 trim을 허용하려면 진짜 occupancy 기반 배치가 필요. 현재는 보수적으로 포기.
+- P1 (2000×280 × 2 + 760×260 × 7 회전 불허): 760×260 7개가 미배치로 남는 별개 밀도 버그. 이 작업 범위 밖.
+- Phase A occupancy 전환: "한 region에 여러 row" 같은 본격 2D 배치. 훨씬 큰 작업.

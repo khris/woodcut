@@ -140,6 +140,20 @@ woodcut/
 
 ---
 
+## Occupancy 기반 겹침 방지 (2026-04-19)
+
+Stacked 그룹 위로 덮어쓰는 P0 겹침 버그 수정.
+
+- **신규**: `src/woodcut/strategies/rect.py` — `Rect` + `intersects/contains/split_guillotine`
+- **신규**: `_init_region_occupancy(regions)` — region에 `occupied: list[Rect]`/`free_rects: list[Rect]` 필드 채움. **stacked 그룹은 count개의 Rect로 따로 기록**이 핵심(Phase A 직후 실행).
+- **수정**: `_optimize_trim_placement` — stacked anchor 그룹의 column 위에 trim 공간이 있다고 가정하지 않음(건너뜀). trim_rows 추가 전 `occupied`와 교차 여부 방어 assert.
+- **스키마**: `trim_rows[*]`에 선택 필드 `x_offset`(기본 0). cut 생성 로직도 한 줄 반영(line 706).
+- **회귀 방지**: `tests/test_overlap_detection.py` — 조각 쌍 bounding box 교차 여부를 직접 검사하는 헬퍼 + P0/협탁/기본 회전 3 케이스.
+
+후속: 완전 occupancy 기반 백트래킹·stacked column 최상단 위 trim 허용은 범위 밖.
+
+---
+
 ## 원판 재고 부족 시 명시 리포트 (2026-04-18)
 
 `RegionBasedPacker.pack()`는 이제 `(plates, unplaced)` 튜플을 반환한다.
@@ -163,6 +177,7 @@ woodcut/
 - [002: 다단 배치](.solution/002-20260104-multi-tier-placement.md) - 남은 공간 활용 (계획 단계)
 - [004: 멀티 사이즈 원판](.solution/004-20260418-multi-size-stocks-plan.md) - Best-Fit Lookahead + 사전식 편향
 - [005: 원판 재고 부족 리포트](.solution/005-20260418-stock-shortage-reporting.md) - `pack()` 반환 튜플화 + CLI/API/UI 경고
+- [006: Occupancy 기반 겹침 방지](.solution/006-20260419-occupancy-hierarchical-backtracking.md) - `Rect` + `occupied` 필드, stacked trim 겹침 P0 수정
 
 ---
 
