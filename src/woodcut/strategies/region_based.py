@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 from ..packing import PackingStrategy, FreeSpace
-from .rect import Rect
+from .rect import Rect, intersects
 
 
 def select_best_stock(
@@ -711,7 +711,7 @@ class RegionBasedPacker(PackingStrategy):
                 # 행 내부 trim 공간에 배치된 조각들 (multi-tier trim)
                 for trim_row in group.get('trim_rows', []):
                     trim_y = current_y + trim_row['y_offset']
-                    trim_x = group_start_x
+                    trim_x = group_start_x + trim_row.get('x_offset', 0)
                     for trim_group in trim_row['groups']:
                         tw, th = trim_group['original_size']
                         trotated = trim_group['rotated']
@@ -1093,6 +1093,12 @@ class RegionBasedPacker(PackingStrategy):
                 else:
                     current_x += (piece_w + self.kerf) * group['count']
 
+                # stacked 그룹은 column 전체를 점유하므로 "위에 trim 공간" 개념이
+                # 성립하지 않는다. row_height - piece_h 는 두 번째 stacked 조각의
+                # 영역이며 빈 공간이 아니다 (P0 겹침 버그의 근본 원인).
+                if stacked:
+                    continue
+
                 # kerf 2개: 주조각↔trim 사이 + trim↔영역경계 사이
                 trim_height = row_height - piece_h - 2 * self.kerf
                 if trim_height < self.kerf:
@@ -1183,8 +1189,30 @@ class RegionBasedPacker(PackingStrategy):
                         g['original_size'][0] if g['rotated'] else g['original_size'][1]
                         for g in trim_groups
                     )
+                    trim_y_offset = piece_h + self.kerf
+
+                    # 방어: 배치될 각 조각이 region['occupied']와 겹치지 않는지.
+                    # _init_region_occupancy가 region-local 좌표계로 기록하므로
+                    # group_start_x 는 region.x 만큼 빼서 변환한다.
+                    occupied_rects = region.get('occupied', [])
+                    cursor_x_local = group_start_x - region['x']
+                    for tg in trim_groups:
+                        tw, th = tg['original_size']
+                        tpw = th if tg['rotated'] else tw
+                        tph = tw if tg['rotated'] else th
+                        for _ in range(tg['count']):
+                            candidate = Rect(cursor_x_local, trim_y_offset, tpw, tph)
+                            for occ in occupied_rects:
+                                if intersects(candidate, occ):
+                                    raise AssertionError(
+                                        f"trim 배치가 점유 공간과 겹침: "
+                                        f"cand={candidate}, occ={occ}, "
+                                        f"region=({region['x']},{region['y']},{region['width']}×{region['height']})"
+                                    )
+                            cursor_x_local += tpw + self.kerf
+
                     group.setdefault('trim_rows', []).append({
-                        'y_offset': piece_h + self.kerf,
+                        'y_offset': trim_y_offset,
                         'groups': trim_groups,
                         'height': trim_h
                     })
