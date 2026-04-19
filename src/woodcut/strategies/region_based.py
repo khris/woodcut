@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 from ..packing import PackingStrategy, FreeSpace
+from .rect import Rect
 
 
 def select_best_stock(
@@ -153,6 +154,11 @@ class RegionBasedPacker(PackingStrategy):
 
         # 4. 앵커 기반 백트래킹으로 최적 조합 찾기
         regions = self._allocate_anchor_backtrack(all_variants)
+
+        # occupancy 필드 초기화 (Phase A 결과물을 공간 모델로 명시화)
+        # Phase B(trim 최적화)가 이 필드를 참조해 stacked 조각 위를 침범하지 않도록 한다.
+        if regions:
+            self._init_region_occupancy(regions)
 
         # 영역 간 trim 최적화
         if regions:
@@ -955,6 +961,104 @@ class RegionBasedPacker(PackingStrategy):
                 piece['placed_h'] = piece['height']
 
         return placed, cuts
+
+    def _init_region_occupancy(self, regions: list[dict]) -> None:
+        """Phase A 결과물에 `occupied`/`free_rects` 필드를 추가.
+
+        Region 좌표계(region.x/y 원점)로 앵커 그룹의 조각 bounding box를
+        기록한다. **stacked 그룹은 count개의 Rect로 따로 기록** — 이것이
+        P0 버그(stacked 위에 덮어쓰기)의 근본 수정 지점. 한 덩어리가 아닌
+        여러 Rect로 표현되므로 이후 패스가 그 사이에 조각을 끼워넣을 수 없다.
+
+        이 단계에서 `free_rects`는 간단한 행-기반 분할로 채운다:
+          - 비-stacked 그룹 위의 trim 스트립 (앵커보다 낮은 그룹 위 빈 공간)
+          - 모든 그룹의 오른쪽 남은 공간
+          - 행 아래 여분(일반적으로 0)
+
+        호출 시점: Phase A 직후, Phase B(`_optimize_trim_placement`) 직전.
+        이 단계는 필드만 추가하고 기존 동작에는 영향 없다(아직 읽는 패스 없음).
+        """
+        for region in regions:
+            occupied: list[Rect] = []
+            free_rects: list[Rect] = []
+
+            rows = region.get('rows') or []
+            row_height = rows[0]['height'] if rows else 0
+            groups = rows[0]['groups'] if rows else []
+
+            # 앵커 그룹 조각들을 occupied에 기록
+            current_x = 0
+            for group in groups:
+                ow, oh = group['original_size']
+                rotated = group['rotated']
+                stacked = group.get('stacked', False)
+                piece_w = oh if rotated else ow
+                piece_h = ow if rotated else oh
+                count = group['count']
+
+                if stacked:
+                    # 한 컬럼에 count개 세로로 쌓음 — 조각마다 별도 Rect
+                    for i in range(count):
+                        occupied.append(Rect(
+                            current_x,
+                            i * (piece_h + self.kerf),
+                            piece_w,
+                            piece_h,
+                        ))
+                    current_x += piece_w + self.kerf
+                else:
+                    for i in range(count):
+                        occupied.append(Rect(
+                            current_x + i * (piece_w + self.kerf),
+                            0,
+                            piece_w,
+                            piece_h,
+                        ))
+                    current_x += (piece_w + self.kerf) * count
+
+            # free_rects: 각 그룹 위 trim 스트립 + 우측 여백 + 아래 여분
+            scan_x = 0
+            for group in groups:
+                ow, oh = group['original_size']
+                rotated = group['rotated']
+                stacked = group.get('stacked', False)
+                piece_w = oh if rotated else ow
+                piece_h = ow if rotated else oh
+                count = group['count']
+
+                group_w = (
+                    piece_w
+                    if stacked
+                    else (piece_w + self.kerf) * count - self.kerf
+                )
+
+                # 비-stacked 그룹이 앵커보다 낮으면 위에 trim 스트립
+                if not stacked and row_height > piece_h + self.kerf:
+                    trim_y = piece_h + self.kerf
+                    free_rects.append(Rect(
+                        scan_x, trim_y, group_w, row_height - trim_y,
+                    ))
+
+                scan_x += group_w + self.kerf
+
+            # 그룹 우측 여백
+            groups_end_x = scan_x - self.kerf if groups else 0
+            right_x = groups_end_x + self.kerf if groups else 0
+            if region['width'] > right_x:
+                free_rects.append(Rect(
+                    right_x, 0,
+                    region['width'] - right_x, row_height,
+                ))
+
+            # 행 아래 여분 (일반적으로 0이지만 방어적으로)
+            if region['height'] > row_height:
+                free_rects.append(Rect(
+                    0, row_height,
+                    region['width'], region['height'] - row_height,
+                ))
+
+            region['occupied'] = occupied
+            region['free_rects'] = free_rects
 
     def _optimize_trim_placement(self, regions: list[dict]) -> None:
         """이후 영역 그룹을 이전 영역 trim 공간으로 재배치 (최적화)
