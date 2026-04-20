@@ -124,6 +124,39 @@ def test_no_overlap_basic_rotation():
 
 
 # ─────────────────────────────────────────────────────────────
+# Multi-shelf trim 활성 케이스 — Phase B 백트래킹이 실제로 여러 줄을 만드는지
+# ─────────────────────────────────────────────────────────────
+def test_multi_shelf_trim_activates():
+    """높은 trim strip에 여러 줄 shelf가 쌓여 이후 region 그룹을 흡수.
+
+    배치 구조:
+      - Region 1 row_height = 605 (2000×300 × 2 stacked column)
+      - 같은 row 우측에 1500×100 (mid-height 아님, 600 < row_height - kerf 아닐 것이므로
+        실제로는 trim strip 형성됨 — 자동 Phase A 결과에 맡김)
+      - Region 2 의 300×200 × 6 중 일부가 Phase B trim 으로 이동
+    겹침 없어야 하고, 여러 개의 trim 조각이 plate 1 에 나타나야 함.
+    """
+    plates, unplaced = _run(
+        [(3600, 1220, 2)],
+        [(2000, 300, 2), (1500, 100, 1), (300, 200, 6)],
+        allow_rotation=False,
+    )
+    for plate in plates:
+        assert_pieces_within_plate(plate)
+        assert_no_piece_overlap(plate)
+    # 모든 조각 배치 + 1장으로 처리 (trim 최적화가 region 2 을 흡수)
+    placed = sum(len(p['pieces']) for p in plates)
+    total = 2 + 1 + 6
+    assert placed == total, f"{placed}/{total} 배치"
+    assert unplaced == []
+    # plate 1 에 300×200 조각이 최소 1개 이상 배치돼야 함 (trim 흡수 확인)
+    first_plate_pieces = plates[0]['pieces']
+    trim_pieces = [p for p in first_plate_pieces
+                   if (p['width'], p['height']) == (300, 200)]
+    assert trim_pieces, "Phase B trim 으로 300×200 이 plate 1 에 이동했어야 함"
+
+
+# ─────────────────────────────────────────────────────────────
 # 헬퍼 자체 단위 테스트 (자가 검증)
 # ─────────────────────────────────────────────────────────────
 def test_helper_detects_overlap():

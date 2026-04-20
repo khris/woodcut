@@ -1131,91 +1131,25 @@ class RegionBasedPacker(PackingStrategy):
                     else:
                         scan_x += (rpiece_w + self.kerf) * rg['count']
                 trim_width_available = trim_x_end - group_start_x
-                trim_groups: list[dict] = []
 
-                for j in range(i + 1, len(regions)):
-                    later_region = regions[j]
-                    if later_region.get('type') == 'scrap':
-                        continue
+                # 후보 수집: 이후 region의 잔여 그룹을 평탄화
+                candidates = self._collect_trim_candidates(regions, i + 1)
+                if not candidates:
+                    continue
 
-                    later_row = later_region['rows'][0]
-                    to_remove: list[dict] = []
+                # Shelf 기반 백트래킹: greedy FFDH lower bound + DFS with pruning.
+                # shelf 동질성(같은 height만 병합)을 강제해 cut 생성은 무변경.
+                shelves = self._pack_strip_shelves(
+                    trim_width_available, trim_height, candidates, self.kerf,
+                )
+                if not shelves:
+                    continue
 
-                    for later_group in later_row['groups']:
-                        lw, lh = later_group['original_size']
-                        lrotated = later_group['rotated']
-                        lpiece_w = lh if lrotated else lw
-                        lpiece_h = lw if lrotated else lh
-
-                        if lpiece_h > trim_height:
-                            continue
-
-                        max_fit = (trim_width_available + self.kerf) // (lpiece_w + self.kerf)
-                        if max_fit == 0:
-                            continue
-
-                        move_count = min(later_group['count'], max_fit)
-
-                        trim_groups.append({
-                            'original_size': (lw, lh),
-                            'rotated': lrotated,
-                            'count': move_count,
-                        })
-
-                        later_group['count'] -= move_count
-
-                        print(f"  [trim 최적화] {lw}×{lh} × {move_count}개 → R{i+1} trim (y_offset={piece_h + self.kerf}, trim_h={trim_height})")
-
-                        if later_group['count'] == 0:
-                            to_remove.append(later_group)
-
-                        trim_width_available -= move_count * (lpiece_w + self.kerf)
-                        if trim_width_available < self.kerf:
-                            break
-
-                    for g in to_remove:
-                        later_row['groups'].remove(g)
-
-                    # 빈 영역 → scrap으로 전환 (경계 절단선은 유지)
-                    if not later_row['groups']:
-                        later_region['type'] = 'scrap'
-                        later_region['rows'] = [{'groups': [], 'height': 0}]
-
-                    if trim_width_available < self.kerf:
-                        break
-
-                if trim_groups:
-                    trim_h = max(
-                        g['original_size'][0] if g['rotated'] else g['original_size'][1]
-                        for g in trim_groups
-                    )
-                    trim_y_offset = piece_h + self.kerf
-
-                    # 방어: 배치될 각 조각이 region['occupied']와 겹치지 않는지.
-                    # _init_region_occupancy가 region-local 좌표계로 기록하므로
-                    # group_start_x 는 region.x 만큼 빼서 변환한다.
-                    occupied_rects = region.get('occupied', [])
-                    cursor_x_local = group_start_x - region['x']
-                    for tg in trim_groups:
-                        tw, th = tg['original_size']
-                        tpw = th if tg['rotated'] else tw
-                        tph = tw if tg['rotated'] else th
-                        for _ in range(tg['count']):
-                            candidate = Rect(cursor_x_local, trim_y_offset, tpw, tph)
-                            for occ in occupied_rects:
-                                if intersects(candidate, occ):
-                                    raise AssertionError(
-                                        f"trim 배치가 점유 공간과 겹침: "
-                                        f"cand={candidate}, occ={occ}, "
-                                        f"region=({region['x']},{region['y']},{region['width']}×{region['height']})"
-                                    )
-                            cursor_x_local += tpw + self.kerf
-
-                    group.setdefault('trim_rows', []).append({
-                        'y_offset': trim_y_offset,
-                        'groups': trim_groups,
-                        'height': trim_h
-                    })
+                # trim_rows 엔트리 변환 + 후보 count 감소 + 점유 방어 assert
+                self._apply_shelf_result(
+                    group, shelves, candidates,
+                    piece_h, region, group_start_x, i, regions,
+                )
 
         # 연속된 scrap 영역 병합 (불필요한 경계 절단선 제거)
         i = 0
@@ -1225,6 +1159,293 @@ class RegionBasedPacker(PackingStrategy):
                 regions.pop(i + 1)
             else:
                 i += 1
+
+    def _collect_trim_candidates(self, regions: list[dict], start_idx: int) -> list[dict]:
+        """regions[start_idx..]의 잔여 그룹을 trim 후보로 평탄화.
+
+        각 후보는 {region_idx, group_ref, original_size, rotated, piece_w, piece_h,
+        count}. group_ref 는 source region의 group dict를 그대로 참조하므로
+        `_apply_shelf_result` 에서 count를 직접 감소시킬 수 있다.
+        """
+        candidates: list[dict] = []
+        for ridx in range(start_idx, len(regions)):
+            r = regions[ridx]
+            if r.get('type') == 'scrap':
+                continue
+            rows = r.get('rows') or []
+            if not rows:
+                continue
+            for g in rows[0]['groups']:
+                if g.get('count', 0) <= 0:
+                    continue
+                ow, oh = g['original_size']
+                rot = g['rotated']
+                candidates.append({
+                    'region_idx': ridx,
+                    'group_ref': g,
+                    'original_size': (ow, oh),
+                    'rotated': rot,
+                    'piece_w': oh if rot else ow,
+                    'piece_h': ow if rot else oh,
+                    'count': g['count'],
+                })
+        return candidates
+
+    def _pack_strip_shelves(
+        self,
+        strip_w: int,
+        strip_h: int,
+        candidates: list[dict],
+        kerf: int,
+    ) -> list[dict]:
+        """Strip(strip_w × strip_h)을 shelf 기반으로 2D 패킹.
+
+        Shelf 구조:
+          - 각 shelf는 y_offset + height (동일 높이 조각만 수용) + 좌측부터 순차 배치
+          - strip 내 shelf 여러 개 허용: y = 0, h0+kerf, h0+kerf+h1+kerf, ...
+          - "한 줄 우선": 기존 shelf 확장을 새 shelf 생성보다 먼저 시도
+
+        탐색:
+          1. 후보를 unit-level로 펼쳐 면적-desc 고정 순서로 정렬
+          2. Greedy FFDH로 초기 lower bound 확보
+          3. DFS로 백트래킹 — 각 유닛을 "기존 shelf (동일 높이, 폭 맞음) | 새 shelf"
+             중 하나에 배치. place 가능하면 skip 분기 없음 (면적 desc 정렬에서
+             place 는 skip 을 지배). 가지치기: current + 잔여_면적_상한 ≤ best.
+          4. 최고 점수의 shelf 리스트 반환. 동점은 조각 수로 tie-break.
+
+        Returns: list of {'y', 'height', 'pieces': [(cand_idx, piece_w, piece_h), ...]}.
+        pieces 순서 = shelf 내 좌측→우측.
+        """
+        if not candidates or strip_w <= 0 or strip_h <= 0:
+            return []
+
+        # Unit 전개 (같은 후보의 count 개 만큼 index 반복)
+        units: list[int] = []
+        for idx, c in enumerate(candidates):
+            if c['piece_h'] > strip_h or c['piece_w'] > strip_w:
+                continue
+            units.extend([idx] * c['count'])
+        if not units:
+            return []
+
+        # 면적 desc, tie-break: 높이 desc → 너비 desc
+        units.sort(key=lambda i: (
+            -(candidates[i]['piece_w'] * candidates[i]['piece_h']),
+            -candidates[i]['piece_h'],
+            -candidates[i]['piece_w'],
+        ))
+
+        # 잔여 면적 접미합 (가지치기용 낙관적 상한)
+        suffix_area = [0] * (len(units) + 1)
+        for i in range(len(units) - 1, -1, -1):
+            c = candidates[units[i]]
+            suffix_area[i] = suffix_area[i + 1] + c['piece_w'] * c['piece_h']
+
+        # 1) Greedy FFDH baseline (shelf 동질성 제약)
+        baseline = self._greedy_shelves(strip_w, strip_h, units, candidates, kerf)
+        best_area = sum(p[1] * p[2] for s in baseline for p in s['pieces'])
+        best_count = sum(len(s['pieces']) for s in baseline)
+        best_snapshot = [
+            {'y': s['y'], 'height': s['height'], 'pieces': list(s['pieces'])}
+            for s in baseline
+        ]
+
+        # 2) DFS 백트래킹
+        def dfs(i: int, shelves: list[dict], current_area: int) -> None:
+            nonlocal best_area, best_count, best_snapshot
+
+            count_so_far = sum(len(s['pieces']) for s in shelves)
+            if current_area > best_area or (
+                current_area == best_area and count_so_far > best_count
+            ):
+                best_area = current_area
+                best_count = count_so_far
+                best_snapshot = [
+                    {'y': s['y'], 'height': s['height'], 'pieces': list(s['pieces'])}
+                    for s in shelves
+                ]
+
+            if i == len(units):
+                return
+
+            # 가지치기: 지금까지 + 잔여 전체 면적도 best에 못 미치면 컷
+            if current_area + suffix_area[i] < best_area:
+                return
+
+            u_idx = units[i]
+            cand = candidates[u_idx]
+            pw, ph = cand['piece_w'], cand['piece_h']
+            placed_any = False
+
+            # (i) 기존 shelf 확장 — 동일 높이만, 너비 체크
+            for s in shelves:
+                if s['height'] != ph:
+                    continue
+                needed = pw if not s['pieces'] else pw + kerf
+                if s['x_used'] + needed > strip_w:
+                    continue
+                saved_x = s['x_used']
+                s['x_used'] = saved_x + needed
+                s['pieces'].append((u_idx, pw, ph))
+                dfs(i + 1, shelves, current_area + pw * ph)
+                s['pieces'].pop()
+                s['x_used'] = saved_x
+                placed_any = True
+
+            # (ii) 새 shelf 생성 — strip 높이 잔여 확인
+            if shelves:
+                next_y = sum(s['height'] for s in shelves) + len(shelves) * kerf
+            else:
+                next_y = 0
+            if next_y + ph <= strip_h and pw <= strip_w:
+                new_shelf = {
+                    'y': next_y, 'height': ph, 'x_used': pw,
+                    'pieces': [(u_idx, pw, ph)],
+                }
+                shelves.append(new_shelf)
+                dfs(i + 1, shelves, current_area + pw * ph)
+                shelves.pop()
+                placed_any = True
+
+            # (iii) 배치 불가 → 해당 유닛 skip하고 진행
+            if not placed_any:
+                dfs(i + 1, shelves, current_area)
+
+        dfs(0, [], 0)
+
+        # 반환 전 x_used 제거 (결과 소비자는 불필요)
+        for s in best_snapshot:
+            s.pop('x_used', None)
+        return best_snapshot
+
+    def _greedy_shelves(
+        self,
+        strip_w: int,
+        strip_h: int,
+        units: list[int],
+        candidates: list[dict],
+        kerf: int,
+    ) -> list[dict]:
+        """FFDH 유사 shelf 패킹 — 동일 height shelf만 확장, 아니면 새 shelf.
+
+        백트래킹의 초기 lower bound 공급용. 결정론적 greedy.
+        """
+        shelves: list[dict] = []
+        for u_idx in units:
+            c = candidates[u_idx]
+            pw, ph = c['piece_w'], c['piece_h']
+            placed = False
+            for s in shelves:
+                if s['height'] != ph:
+                    continue
+                needed = pw if not s['pieces'] else pw + kerf
+                if s['x_used'] + needed <= strip_w:
+                    s['x_used'] += needed
+                    s['pieces'].append((u_idx, pw, ph))
+                    placed = True
+                    break
+            if placed:
+                continue
+            next_y = (
+                sum(s['height'] for s in shelves) + len(shelves) * kerf
+                if shelves else 0
+            )
+            if next_y + ph <= strip_h and pw <= strip_w:
+                shelves.append({
+                    'y': next_y, 'height': ph, 'x_used': pw,
+                    'pieces': [(u_idx, pw, ph)],
+                })
+        return shelves
+
+    def _apply_shelf_result(
+        self,
+        anchor_group: dict,
+        shelves: list[dict],
+        candidates: list[dict],
+        piece_h: int,
+        region: dict,
+        group_start_x: int,
+        region_idx: int,
+        regions: list[dict],
+    ) -> None:
+        """Shelf 결과를 anchor_group.trim_rows + 후보 count 감소 + 방어 assert 로 반영.
+
+        - 각 shelf → 하나의 trim_rows 엔트리 (y_offset, height, groups)
+        - shelf 내 동일 cand_idx 연속은 하나의 trim_group 으로 병합
+        - 후보 candidates[u_idx]['group_ref']['count'] -= 배치된 수
+        - 각 배치 직전 region['occupied']와 Rect 교차 검사 — 겹침 시 AssertionError
+        - 완료 후 count=0 이 된 그룹을 source region row에서 제거,
+          row가 비면 region을 scrap 전환
+        """
+        kerf = self.kerf
+        occupied_rects = region.get('occupied', [])
+
+        # trim_rows 엔트리 생성 + 방어 검사
+        for shelf in shelves:
+            trim_groups: list[dict] = []
+            cursor_x_local = group_start_x - region['x']
+            y_local = piece_h + kerf + shelf['y']
+            last_cand_idx: int | None = None
+
+            for (u_idx, pw, ph) in shelf['pieces']:
+                cand = candidates[u_idx]
+                candidate_rect = Rect(cursor_x_local, y_local, pw, ph)
+                for occ in occupied_rects:
+                    if intersects(candidate_rect, occ):
+                        raise AssertionError(
+                            f"trim 배치가 점유 공간과 겹침: "
+                            f"cand={candidate_rect}, occ={occ}, "
+                            f"region=({region['x']},{region['y']},"
+                            f"{region['width']}×{region['height']})"
+                        )
+                if last_cand_idx == u_idx and trim_groups:
+                    trim_groups[-1]['count'] += 1
+                else:
+                    trim_groups.append({
+                        'original_size': cand['original_size'],
+                        'rotated': cand['rotated'],
+                        'count': 1,
+                    })
+                    last_cand_idx = u_idx
+                cursor_x_local += pw + kerf
+
+            if not trim_groups:
+                continue
+
+            anchor_group.setdefault('trim_rows', []).append({
+                'y_offset': piece_h + kerf + shelf['y'],
+                'groups': trim_groups,
+                'height': shelf['height'],
+            })
+            moved_sig = ', '.join(
+                f"{tg['original_size'][0]}×{tg['original_size'][1]}×{tg['count']}"
+                for tg in trim_groups
+            )
+            print(
+                f"  [trim 최적화] shelf y={shelf['y']} h={shelf['height']}: {moved_sig} "
+                f"→ R{region_idx+1}"
+            )
+
+        # 후보 count 감소 (group_ref 직접 수정)
+        for shelf in shelves:
+            for (u_idx, _pw, _ph) in shelf['pieces']:
+                g = candidates[u_idx]['group_ref']
+                g['count'] -= 1
+                if g['count'] < 0:
+                    raise AssertionError(f"후보 count 음수: {g}")
+
+        # count=0 그룹 제거 + 빈 row → scrap 전환
+        touched_regions = {candidates[u_idx]['region_idx']
+                           for s in shelves for (u_idx, _, _) in s['pieces']}
+        for ridx in touched_regions:
+            r = regions[ridx]
+            if r.get('type') == 'scrap':
+                continue
+            row = r['rows'][0]
+            row['groups'] = [g for g in row['groups'] if g['count'] > 0]
+            if not row['groups']:
+                r['type'] = 'scrap'
+                r['rows'] = [{'groups': [], 'height': 0}]
 
     def _allocate_mixed_regions(self, height_clusters, width_clusters, strategy='horizontal_first'):
         """높이 기반 + 너비 기반 클러스터를 혼합하여 영역 할당
