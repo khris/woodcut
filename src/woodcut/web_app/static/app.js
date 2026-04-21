@@ -233,10 +233,18 @@ async function initPyodide() {
         const packingCode = await packingResponse.text();
         await pyodide.runPythonAsync(packingCode);
 
+        // rect.py 는 region_based.py 가 `from .rect import Rect, intersects` 로 의존.
+        // pyodide 단일 globals 환경이라 상대 임포트가 불가하므로 먼저 실행해 심볼 노출.
+        const rectResponse = await fetch(`static/rect.py?v=${Date.now()}`);
+        let rectCode = await rectResponse.text();
+        rectCode = rectCode.replace(/from __future__ import annotations\n/g, '');
+        await pyodide.runPythonAsync(rectCode);
+
         const regionResponse = await fetch(`static/region_based.py?v=${Date.now()}`);
         let regionCode = await regionResponse.text();
         regionCode = regionCode.replace(/from __future__ import annotations\n/g, '');
         regionCode = regionCode.replace(/from \.\.packing import[^\n]*\n/g, '');
+        regionCode = regionCode.replace(/from \.rect import[^\n]*\n/g, '');
         await pyodide.runPythonAsync(regionCode);
 
         const splitResponse = await fetch(`static/region_based_split.py?v=${Date.now()}`);
