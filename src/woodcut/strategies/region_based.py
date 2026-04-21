@@ -219,6 +219,21 @@ class RegionBasedPacker(PackingStrategy):
             return (priority, region_idx, sub_priority, position)
 
         all_cuts.sort(key=sort_key)
+
+        # 물리적으로 동일한 절단선(같은 방향·위치·범위)이 서로 다른 타입으로
+        # 중복 emit되는 경우를 제거. 예: stacked column의 첫 스택 아래 row가
+        # 있을 때 stacked_separation과 secondary_row_trim이 동일 좌표에 생성됨
+        # (.solution/009 참조). 먼저 나온 컷(낮은 priority)을 유지.
+        deduped: list[dict] = []
+        seen: set[tuple] = set()
+        for cut in all_cuts:
+            key = (cut.get('direction'), cut.get('position'), cut.get('start'), cut.get('end'))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(cut)
+        all_cuts = deduped
+
         for idx, cut in enumerate(all_cuts):
             cut['order'] = idx + 1
             if 'region_x' not in cut:
@@ -927,16 +942,18 @@ class RegionBasedPacker(PackingStrategy):
         for row_y, (row_h, x_start, x_end) in secondary_rows.items():
             row_end = row_y + row_h
             if row_end < region_y + max_height - self.kerf:
-                # x_end는 region 끝까지 — 이 컷이 적용되는 서브영역의 전체 폭을 커버해야 함
+                # 컷 범위는 해당 행 조각의 실제 수평 범위로 제한해야 함.
+                # region 전체 너비로 확장하면 인접 컬럼(예: stacked 우측의 다른 그룹)을
+                # 가로지르는 Guillotine 위반이 발생 (.solution/009).
                 cuts.append({
                     'direction': 'H',
                     'position': row_end,
                     'start': x_start,
-                    'end': region['x'] + region['width'],
+                    'end': x_end,
                     'priority': region_priority_base + 23,
                     'type': 'secondary_row_trim'
                 })
-                print(f"  → 2차 행 trim: y={row_end}, x={x_start}~{region['x'] + region['width']}")
+                print(f"  → 2차 행 trim: y={row_end}, x={x_start}~{x_end}")
 
         # 4. 세로 배치(stacked) 컬럼 감지 및 전용 절단선 생성
         # 동일 x + 동일 너비 + 연속 y = 하나의 세로 컬럼
