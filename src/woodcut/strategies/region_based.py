@@ -955,6 +955,41 @@ class RegionBasedPacker(PackingStrategy):
                 })
                 print(f"  → 2차 행 trim: y={row_end}, x={x_start}~{x_end}")
 
+        # 3c. 컬럼 상단 Guillotine trim (.solution/010).
+        # 각 x 컬럼의 실제 "천장"을 집계해 region 천장보다 낮으면 H 컷을 추가.
+        # H 컷 범위는 인접 V 컷 사이의 서브영역 전체(= 인접 컬럼 경계)로 확장해
+        # "서브영역 전체 관통"이라는 Guillotine 조건을 만족시킨다.
+        column_top: dict[tuple[int, int], int] = {}
+        for g in groups:
+            g_x_start = min(p['x'] for p in g['pieces'])
+            g_x_end = max(
+                p['x'] + (p['height'] if p.get('rotated') else p['width'])
+                for p in g['pieces']
+            )
+            top_y = g['y'] + g['height']
+            key = (g_x_start, g_x_end)
+            column_top[key] = max(column_top.get(key, 0), top_y)
+
+        region_top = region_y + max_height
+        region_x_end = region['x'] + region['width']
+        sorted_cols = sorted(column_top.keys())
+        for i, (xs, xe) in enumerate(sorted_cols):
+            top_y = column_top[(xs, xe)]
+            if region_top - top_y <= self.kerf:
+                continue
+            left = sorted_cols[i - 1][1] if i > 0 else region['x']
+            right = sorted_cols[i + 1][0] if i < len(sorted_cols) - 1 else region_x_end
+            cuts.append({
+                'direction': 'H',
+                'position': top_y,
+                'start': left,
+                'end': right,
+                'priority': region_priority_base + 15,
+                'type': 'column_top_trim',
+                'sub_priority': 0,
+            })
+            print(f"  → 컬럼 top trim: y={top_y}, x={left}~{right}")
+
         # 4. 세로 배치(stacked) 컬럼 감지 및 전용 절단선 생성
         # 동일 x + 동일 너비 + 연속 y = 하나의 세로 컬럼
         stacked_columns: dict[tuple, list[int]] = {}
