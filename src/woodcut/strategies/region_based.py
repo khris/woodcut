@@ -164,25 +164,10 @@ class RegionBasedPacker(PackingStrategy):
         if regions:
             self._optimize_trim_placement(regions)
 
-        # 폴백 판단
+        # 폴백: Phase A가 regions 생성에 실패하면 shelf packer로 안전 배치.
+        # placed_w/h를 명시 설정해 trimming cut 경로를 타지 않도록 한다 (.solution/007)
         if not regions:
-            plate = {
-                'width': self.plate_width,
-                'height': self.plate_height,
-                'pieces': [],
-                'cuts': [],
-                'free_spaces': [FreeSpace(0, 0, self.plate_width, self.plate_height)],
-            }
-            for piece in remaining_pieces:
-                placement = self._find_best_placement_simple(
-                    plate['free_spaces'], plate['pieces'], piece
-                )
-                if placement:
-                    self._apply_placement(
-                        plate['free_spaces'], plate['pieces'], piece, placement
-                    )
-            self.generate_guillotine_cuts(plate)
-            return plate
+            return self._pack_fallback_shelf(remaining_pieces)
 
         return self._build_plate_from_regions(regions)
 
@@ -244,8 +229,152 @@ class RegionBasedPacker(PackingStrategy):
         plate['cuts'] = all_cuts
         return plate
 
-    
-    
+    def _pack_fallback_shelf(self, pieces: list[dict]) -> dict:
+        """Phase A가 regions를 못 만들 때 쓰는 안전망 (NFDH shelf 배치).
+
+        기존 fallback은 `_find_best_placement_simple` + `generate_guillotine_cuts`
+        조합이었지만, 후자가 조각을 영역 경계로 trim해 `placed_w/h`를 오염시키는
+        버그가 있었다 (.solution/007). 여기서는 각 조각을 원본 크기 그대로 두고
+        `placed_w/h`를 명시 설정해 trim 경로를 차단한다.
+        """
+        plate = {
+            'width': self.plate_width,
+            'height': self.plate_height,
+            'pieces': [],
+            'cuts': [],
+            'free_spaces': [],
+        }
+
+        # 큰 조각 먼저 (Next-Fit Decreasing Height)
+        sorted_pieces = sorted(
+            pieces,
+            key=lambda p: (-max(p['width'], p['height']), -p['area'])
+        )
+
+        shelves: list[dict] = []  # {'y', 'h', 'x_cursor', 'pieces'}
+        y_next = 0
+
+        for piece in sorted_pieces:
+            w0, h0 = piece['width'], piece['height']
+            placed = False
+
+            # shelf h를 최대한 채우는 배향 우선 (ph 내림차순)
+            oriented = sorted(
+                self._fallback_orientations(w0, h0),
+                key=lambda t: -t[1]
+            )
+
+            # 1) 기존 shelf에 끼워넣기
+            for shelf in shelves:
+                for pw, ph, rot in oriented:
+                    if ph > shelf['h']:
+                        continue
+                    if shelf['x_cursor'] + pw > self.plate_width:
+                        continue
+                    shelf['pieces'].append({
+                        **piece,
+                        'x': shelf['x_cursor'],
+                        'y': shelf['y'],
+                        'rotated': rot,
+                        'placed_w': pw,
+                        'placed_h': ph,
+                    })
+                    shelf['x_cursor'] += pw + self.kerf
+                    placed = True
+                    break
+                if placed:
+                    break
+            if placed:
+                continue
+
+            # 2) 새 shelf — tall 배향 우선(shelf h 최대화로 후속 포용력↑)
+            tall_candidates = oriented
+
+            for pw, ph, rot in tall_candidates:
+                if pw > self.plate_width:
+                    continue
+                if y_next + ph > self.plate_height:
+                    continue
+                placed_piece = {
+                    **piece,
+                    'x': 0,
+                    'y': y_next,
+                    'rotated': rot,
+                    'placed_w': pw,
+                    'placed_h': ph,
+                }
+                shelves.append({
+                    'y': y_next,
+                    'h': ph,
+                    'x_cursor': pw + self.kerf,
+                    'pieces': [placed_piece],
+                })
+                y_next += ph + self.kerf
+                placed = True
+                break
+            # placed == False 이면 drop — 상위 loop의 `remaining` 차감이 남겨둔다
+
+        for shelf in shelves:
+            plate['pieces'].extend(shelf['pieces'])
+
+        self._emit_fallback_cuts(plate, shelves)
+        return plate
+
+    def _fallback_orientations(self, w: int, h: int):
+        """폴백 shelf에서 쓸 (pw, ph, rotated) 배향 후보. 비회전 우선."""
+        yield (w, h, False)
+        if self.allow_rotation and w != h:
+            yield (h, w, True)
+
+    def _emit_fallback_cuts(self, plate: dict, shelves: list[dict]) -> None:
+        """shelf 기반 Guillotine 절단선 생성.
+
+        - H cut: shelf 상단 (plate top 미만인 경우만 — top scrap과 분리)
+        - V cut: shelf 내부 조각 간 경계 + 마지막 조각 우측 (우측 scrap 분리)
+        모든 조각의 `placed_w/h`가 실제 크기와 일치하므로 trimming cut은 필요 없다.
+        """
+        cuts = []
+        pw = self.plate_width
+        ph = self.plate_height
+
+        for idx, shelf in enumerate(shelves):
+            shelf_top = shelf['y'] + shelf['h']
+            if shelf_top < ph:
+                cuts.append({
+                    'direction': 'H',
+                    'position': shelf_top,
+                    'start': 0,
+                    'end': pw,
+                    'priority': idx * 100,
+                    'type': 'shelf_boundary',
+                    'region_x': 0,
+                    'region_y': shelf['y'],
+                    'region_w': pw,
+                    'region_h': ph - shelf['y'],
+                })
+            shelf_pieces = sorted(shelf['pieces'], key=lambda p: p['x'])
+            for p in shelf_pieces:
+                right_edge = p['x'] + p['placed_w']
+                if right_edge >= pw:
+                    continue
+                cuts.append({
+                    'direction': 'V',
+                    'position': right_edge,
+                    'start': shelf['y'],
+                    'end': shelf_top,
+                    'priority': idx * 100 + 50,
+                    'type': 'shelf_column',
+                    'region_x': 0,
+                    'region_y': shelf['y'],
+                    'region_w': pw,
+                    'region_h': shelf['h'],
+                })
+
+        cuts.sort(key=lambda c: (c['priority'], c.get('position', 0)))
+        for i, c in enumerate(cuts):
+            c['order'] = i + 1
+
+        plate['cuts'] = cuts
 
     def _group_by_exact_size(self, pieces):
         """레벨 1: 정확히 같은 크기의 조각들끼리 그룹화
