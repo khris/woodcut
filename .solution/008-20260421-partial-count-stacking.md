@@ -2,8 +2,8 @@
 
 - **작성일**: 2026-04-21
 - **작성자**: Hong Segi + Claude
-- **상태**: 승인됨
-- **관련 스펙**: [006-occupancy-hierarchical-backtracking](006-20260419-occupancy-hierarchical-backtracking.md), [007-fallback-trim-accuracy](007-20260421-fallback-trim-accuracy.md) (선행)
+- **상태**: 구현 완료 (2026-04-22)
+- **관련 스펙**: [006-occupancy-hierarchical-backtracking](006-20260419-occupancy-hierarchical-backtracking.md), [007-fallback-trim-accuracy](007-20260421-fallback-trim-accuracy.md) (선행), [011-guillotine-tree-refactor](011-20260421-guillotine-tree-refactor.md) (선행, `_pack_multi_group_region` 배치-only 화)
 
 ## 1. 배경과 목표
 
@@ -111,7 +111,7 @@ for k in range(count, 0, -1):
 | 동 | `_build_region_with_anchor`: `consumed` dict 반환, `already_used` → `remaining_counts` 파라미터 |
 | 동 | `_allocate_anchor_backtrack`: `used_groups` set → `remaining_counts` dict. 종료 조건 `all(c == 0)` |
 | 동 | occupancy 초기화(`_init_region_occupancy`): stacked k에 맞는 Rect k개 기록 (기존 로직 연장) |
-| 동 | `_pack_multi_group_region`: 그룹 count가 variant의 k (< 원본 count)일 때도 동작 검증 |
+| ~~동~~ | ~~`_pack_multi_group_region`: 그룹 count가 variant의 k일 때도 동작 검증~~ → 011로 이 함수가 배치-only가 되어 placed 좌표만 보고 `_build_region_subtree`가 알아서 분할. k-variant에 무관. |
 | `.solution/006-...md` | "부분 count stacking 이후" 후속 참조 추가 (한 줄) |
 | `tests/` 또는 CLI 스모크 | 재현 케이스 회귀 + 기존 회귀 보강 |
 
@@ -159,14 +159,41 @@ for k in range(count, 0, -1):
 
 ## 7. 구현 순서
 
-- [ ] 8-1. 007 선행 완료 확인 (fallback 무결성이 있어야 Phase A 실험 시 안전망 유지).
-- [ ] 8-2. `_flatten_group_options`에 k 격자 variant 생성 로직 추가 + 단위 수준 smoke.
-- [ ] 8-3. anchor backtracking을 `remaining_counts` 기반으로 수정 (재귀 시그니처 변경).
-- [ ] 8-4. `_build_region_with_anchor` 반환/소비 로직 업데이트.
-- [ ] 8-5. occupancy 초기화에서 stacked k개 Rect 기록 확인.
-- [ ] 8-6. 재현 케이스 실행 → Sheet 1에 760×260 추가 배치 확인.
-- [ ] 8-7. 기본 회전 허용/불허 회귀.
-- [ ] 8-8. 협탁 preset + 004/005 회귀.
-- [ ] 8-9. 시각화 PNG 육안 확인.
-- [ ] 8-10. AGENTS.md "자주 하는 실수" 항목에 "그룹 전체 count 고정 가정" 경고 한 줄 + PLAN.md 업데이트.
+- [x] 8-1. 007 선행 완료 확인 (fallback 무결성이 있어야 Phase A 실험 시 안전망 유지).
+- [x] 8-2. `_flatten_group_options`에 k 격자 variant 생성 로직 추가 + 단위 수준 smoke.
+- [x] 8-3. anchor backtracking을 `remaining_counts` 기반으로 수정 (재귀 시그니처 변경).
+- [x] 8-4. `_build_region_with_anchor` 반환/소비 로직 업데이트.
+- [x] 8-5. occupancy 초기화에서 stacked k개 Rect 기록 확인.
+- [x] 8-6. 재현 케이스 실행 → Sheet 1에 760×260 추가 배치 확인.
+- [x] 8-7. 기본 회전 허용/불허 회귀.
+- [x] 8-8. 협탁 preset + 004/005 회귀.
+- [x] 8-9. 시각화 PNG 육안 확인.
+- [x] 8-10. AGENTS.md "자주 하는 실수" 항목에 "그룹 전체 count 고정 가정" 경고 한 줄 + PLAN.md 업데이트.
 - [ ] 8-11. 커밋: `feat(packer): allow partial-count stacking in anchor backtracking`
+
+## 8. 실제 구현 차이 / 측정 결과 (2026-04-22)
+
+### 구현 차이
+
+- **`orig_count` 필드 도입**: variant dict에 원본 count를 보존해 `_allocate_anchor_backtrack`이 `initial_remaining` 을 variant list만으로 복원. `group_options`를 별도 인자로 받지 않아도 돼서 `_allocate_anchor_backtrack` 시그니처 불변 — `region_based_split.py`의 호출부 수정 없이 호환.
+- **`_k_grid(count, k_max)`**: 플랜의 "k 격자"를 구현한 헬퍼. `{min(count, k_max)} ∪ {count, count//2, ..., 1}` 중 `k_max` 이하만 채택. `min(count, k_max)` 자체를 항상 포함시켜 "plate를 꽉 채우는 variant" 확보.
+- **anchor candidate dedup 제거**: 기존 `seen_sizes`로 "같은 original_size는 처음 하나만"하던 정책은 의미가 약해져서 그냥 `(height, count)` 내림차순으로 전부 시도. k-variant가 여러 개 나오면 height 큰/count 큰 쪽이 먼저.
+- **stacked k=1 제외**: 가로 k=1과 변별력 없어 중복 — `if k < 2: continue`.
+- **stacked variant 무조건 생성**: 기존엔 `total_width_h > plate_width`일 때만 stacked 추가했지만, k-variant 시대엔 세로가 더 효율적인 경우도 탐색하도록 무조건 후보 제공. dedup은 `(original_size, count, rotated, stacked)` 튜플로 후처리.
+
+### 측정 결과
+
+| 케이스 | Before | After | 비고 |
+|---|---|---|---|
+| 재현(2000×280×4 + 760×260×14 + 100×764×2, 회전 허용) | plates=2, Sheet1=6, unplaced=2 | **plates=2, Sheet1=14, unplaced=1** | Sheet 1에 760×260 ×12 추가 배치 |
+| 재현(동일, 회전 불허) | plates=2, unplaced=2 | plates=2, unplaced=2 | 총합 18개 동일 (물리 한계) |
+| baseline 11조각(회전 허용) | 1판 66.1% | 1판 66.1% | 동일 |
+| baseline 11조각(회전 불허) | 2판(50.2%/15.9%) | **1판 66.1%** | k-variants로 조합 개선 |
+| 협탁 preset(회전 불허) | (기존 통과) | 1판 40.0%, 11/11 | 회귀 없음 |
+| comprehensive_validation | 0 violations | **0 violations** | tree 불변식 유지 |
+| pytest 전체 | 23/23 | 23/23 | 회귀 없음 |
+
+### 알려진 한계 (실제)
+
+- 회전 불허 재현 케이스의 미배치 2개는 물리 한계 — 760×260 14개를 2판에 회전 없이 맞추는 건 현 anchor-row 아키텍처로는 불가능 (right-strip 세로 채우기가 row-기반 구조에 없음). 008 범위 밖.
+- stacked variant가 실제로 선택되는 케이스는 흔하지 않음 — 가로 배치가 호환 그룹 수용 폭이 넓어 대부분 우선 선택됨. 그래도 variant 후보에 들어가 있어야 탐색 공간이 완전해짐.

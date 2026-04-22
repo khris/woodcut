@@ -512,6 +512,10 @@ class RegionBasedPacker(PackingStrategy):
     def _flatten_group_options(self, group_options):
         """회전 옵션을 평면화하여 모든 그룹 변형 목록 생성
 
+        .solution/008: 그룹 count가 plate 한 장에 한 번에 들어가지 않을 때도
+        탐색 기회를 주기 위해 **k 격자 부분 chunk variant**를 생성한다.
+        k ∈ {min(count, k_max), count//2, count//4, ..., 1} — O(log count).
+
         Args:
             group_options: _generate_group_options()의 결과
 
@@ -520,7 +524,7 @@ class RegionBasedPacker(PackingStrategy):
             [
                 {
                     'original_size': (w, h),
-                    'count': n,
+                    'count': n,             # 이 variant가 소비하는 조각 수 (<= 원본 count)
                     'rotated': bool,
                     'stacked': bool,    # 세로 배치 여부
                     'height': int,      # 배치 시 실제 높이
@@ -540,50 +544,91 @@ class RegionBasedPacker(PackingStrategy):
             for option in group_opt['options']:
                 w = option['width']
                 h = option['height']
+                rotated = option['rotated']
 
-                # 가로 배치 옵션 (기본)
-                total_width_h = (w + self.kerf) * count
-                variants.append({
-                    'original_size': original_size,
-                    'count': count,
-                    'rotated': option['rotated'],
-                    'stacked': False,  # 가로 배치
-                    'height': h,
-                    'width': w,
-                    'total_width': total_width_h,
-                    'area': w * h * count
-                })
+                # 가로 배치 k-variants (plate_width에 맞는 k_max_h로 클램프)
+                k_max_h = (
+                    self.plate_width // (w + self.kerf)
+                    if (w + self.kerf) > 0 else 0
+                )
+                for k in self._k_grid(count, k_max_h):
+                    variants.append({
+                        'original_size': original_size,
+                        'orig_count': count,
+                        'count': k,
+                        'rotated': rotated,
+                        'stacked': False,
+                        'height': h,
+                        'width': w,
+                        'total_width': (w + self.kerf) * k,
+                        'area': w * h * k,
+                    })
 
-                # 세로 배치 옵션 (가로 배치가 판재 너비 초과 시)
-                if total_width_h > self.plate_width and count > 1:
-                    total_height_v = (h + self.kerf) * count
-                    # 높이 체크
-                    if total_height_v <= self.plate_height:
-                        variants.append({
-                            'original_size': original_size,
-                            'count': count,
-                            'rotated': option['rotated'],
-                            'stacked': True,  # 세로 배치
-                            'height': total_height_v,  # 전체 높이
-                            'width': w,
-                            'total_width': w + self.kerf,  # 한 조각 너비
-                            'area': w * h * count
-                        })
+                # 세로(stacked) k-variants — k=1은 가로 k=1과 같으므로 제외
+                k_max_v = (
+                    self.plate_height // (h + self.kerf)
+                    if (h + self.kerf) > 0 else 0
+                )
+                for k in self._k_grid(count, k_max_v):
+                    if k < 2:
+                        continue
+                    variants.append({
+                        'original_size': original_size,
+                        'orig_count': count,
+                        'count': k,
+                        'rotated': rotated,
+                        'stacked': True,
+                        'height': (h + self.kerf) * k,
+                        'width': w,
+                        'total_width': w + self.kerf,
+                        'area': w * h * k,
+                    })
 
-        return variants
+        # 중복 제거 (같은 (original_size, count, rotated, stacked)는 하나만 유지)
+        seen: set[tuple] = set()
+        deduped: list[dict] = []
+        for v in variants:
+            key = (v['original_size'], v['count'], v['rotated'], v['stacked'])
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(v)
+        return deduped
 
-    def _build_region_with_anchor(self, anchor, all_unused, already_used):
+    def _k_grid(self, count: int, k_max: int) -> list[int]:
+        """부분 count variant 후보 격자 (내림차순).
+
+        {count, count//2, count//4, ..., 1} 중 k_max 이하만 채택하되,
+        k_max 자체는 항상 포함 (plate를 꽉 채우는 variant 확보).
+        """
+        if count <= 0 or k_max <= 0:
+            return []
+        ks: set[int] = {min(count, k_max)}
+        k = count
+        while k >= 1:
+            if k <= k_max:
+                ks.add(k)
+            if k == 1:
+                break
+            k = k // 2
+        return sorted(ks, reverse=True)
+
+    def _build_region_with_anchor(self, anchor, all_unused, remaining_counts):
         """앵커를 기준으로 영역에 호환 그룹들 추가
+
+        .solution/008: `already_used: set` → `remaining_counts: dict` 로 전환.
+        variant의 `count`가 원본 count보다 작을 수 있으므로 dict로 남은 수를 추적.
+        한 region 안에 같은 `original_size`는 여전히 1회만 (작업 편의성 유지).
 
         Args:
             anchor: 앵커 그룹 변형 (max_height 결정)
-            all_unused: 아직 사용되지 않은 모든 그룹 변형
-            already_used: 이미 사용된 그룹 original_size 집합
+            all_unused: 소비 가능한(remaining 충분한) 모든 그룹 변형
+            remaining_counts: dict[original_size, int] — 각 원본 크기의 남은 count
 
         Returns:
-            (groups_list, used_original_sizes)
+            (groups_list, consumed)
             - groups_list: 영역에 들어갈 그룹 정보 리스트
-            - used_original_sizes: 사용된 original_size 집합
+            - consumed: dict[original_size, int] — 이 region이 소비한 각 원본 크기 count
         """
         max_height = anchor['height']
 
@@ -591,106 +636,115 @@ class RegionBasedPacker(PackingStrategy):
         groups = [{
             'original_size': anchor['original_size'],
             'rotated': anchor['rotated'],
-            'count': anchor['count'],
-            'stacked': anchor.get('stacked', False)  # 세로 배치 여부
+            'count': anchor['count'],  # variant의 k = 실제 배치 수
+            'stacked': anchor.get('stacked', False)
         }]
         used_sizes = {anchor['original_size']}
+        consumed: dict[tuple, int] = {anchor['original_size']: anchor['count']}
         current_width = anchor['total_width']
 
         # 호환 가능한 그룹 찾기
         compatible = []
         for v in all_unused:
-            # 이미 사용된 그룹 스킵
-            if v['original_size'] in used_sizes or v['original_size'] in already_used:
+            # 같은 region 내 동일 original_size 재사용 금지 (앵커 포함)
+            if v['original_size'] in used_sizes:
                 continue
-
-            # 같은 원본 크기인데 다른 회전 옵션인 경우도 스킵
-            if v['original_size'] == anchor['original_size']:
+            # 남은 count가 이 variant의 k에 못 미치면 스킵
+            if remaining_counts.get(v['original_size'], 0) < v['count']:
                 continue
-
             # 높이 제약: v['height'] <= max_height
             if v['height'] > max_height:
                 continue
-
             # 너비 제약: 추가 후 전체 너비 <= plate_width
             needed_width = self.kerf + v['total_width']
             if current_width + needed_width > self.plate_width:
                 continue
-
             compatible.append(v)
 
         # 호환 그룹들을 높이 유사도순으로 정렬 (앵커와 비슷한 높이 우선)
-        # 이유: 비슷한 높이끼리 배치하면 절단 편의성이 좋고, 더 많은 그룹이 들어갈 수 있음
-        compatible.sort(key=lambda v: (abs(max_height - v['height']), -v['area']))
+        # 이유: 비슷한 높이끼리 배치하면 절단 편의성이 좋고, 더 많은 그룹이 들어갈 수 있음.
+        # k가 큰 variant 우선 (-count) — 같은 사이즈 여러 variant 중 꽉 채우는 쪽 선호.
+        compatible.sort(
+            key=lambda v: (abs(max_height - v['height']), -v['count'], -v['area'])
+        )
 
         # 그리디하게 추가
         for v in compatible:
-            # 다시 한 번 체크 (이미 다른 회전 옵션으로 추가된 경우)
             if v['original_size'] in used_sizes:
                 continue
-
             needed_width = self.kerf + v['total_width']
             if current_width + needed_width <= self.plate_width:
                 groups.append({
                     'original_size': v['original_size'],
                     'rotated': v['rotated'],
                     'count': v['count'],
-                    'stacked': v.get('stacked', False)  # 세로 배치 여부
+                    'stacked': v.get('stacked', False)
                 })
                 used_sizes.add(v['original_size'])
+                consumed[v['original_size']] = v['count']
                 current_width += needed_width
 
-        return groups, used_sizes
+        return groups, consumed
 
     def _allocate_anchor_backtrack(self, all_variants):
         """앵커 그룹 기반 백트래킹으로 최적 영역 배치 찾기
 
+        .solution/008: `used_groups: set` → `remaining_counts: dict` 로 전환.
+        variant가 부분 count일 수 있으므로 같은 original_size의 남은 조각을
+        다음 region에서 재소비할 수 있다 (단 같은 region 안 중복은 금지).
+
         Args:
-            all_variants: _flatten_group_options()의 결과
+            all_variants: _flatten_group_options()의 결과 (orig_count 포함)
 
         Returns:
             List of regions (최적 조합) 또는 []
         """
-        # 원본 그룹 크기 집합 (중복 방지용)
-        all_original_sizes = {v['original_size'] for v in all_variants}
-        total_groups = len(all_original_sizes)
+        # 초기 remaining_counts: variant의 orig_count로부터 원본 수 복원
+        initial_remaining: dict[tuple, int] = {}
+        for v in all_variants:
+            orig = v['original_size']
+            # orig_count는 모든 variant가 동일 (같은 original_size에서 나왔으므로).
+            # 하위 호환: orig_count 없으면 count를 사용.
+            initial_remaining[orig] = v.get('orig_count', v['count'])
 
-        print(f"\n[앵커 백트래킹] 총 {total_groups}개 그룹, {len(all_variants)}개 변형 옵션")
+        total_groups = len(initial_remaining)
+        total_pieces = sum(initial_remaining.values())
 
-        def backtrack(used_groups, y_offset):
+        print(
+            f"\n[앵커 백트래킹] 총 {total_groups}개 그룹, "
+            f"{total_pieces}개 조각, {len(all_variants)}개 변형 옵션"
+        )
+
+        def backtrack(remaining: dict, y_offset: int):
             """재귀적 백트래킹
 
             Args:
-                used_groups: 이미 사용된 그룹의 original_size 집합
+                remaining: dict[original_size, int] — 남은 조각 수
                 y_offset: 현재 y 위치
 
             Returns:
                 (best_regions, best_count)
             """
-            # 종료 조건: 모든 그룹 배치 완료
-            if len(used_groups) == total_groups:
+            # 종료 조건: 모든 조각 배치 완료
+            if not any(c > 0 for c in remaining.values()):
                 return [], 0
 
             best_regions = []
             best_count = 0
 
-            # 미사용 그룹 중 앵커 후보 선택
+            # 남은 수로 소비 가능한 variants만 후보로
             unused_variants = [
                 v for v in all_variants
-                if v['original_size'] not in used_groups
+                if remaining.get(v['original_size'], 0) >= v['count']
             ]
 
-            # 높이 내림차순 정렬 (높은 앵커 우선 = 더 많은 그룹 수용 가능)
-            # 같은 original_size의 다른 회전 옵션 중복 제거
-            seen_sizes = set()
-            anchor_candidates = []
-            for v in sorted(unused_variants, key=lambda x: x['height'], reverse=True):
-                if v['original_size'] not in seen_sizes:
-                    anchor_candidates.append(v)
-                    seen_sizes.add(v['original_size'])
-                else:
-                    # 같은 크기의 다른 회전 옵션도 후보로 추가
-                    anchor_candidates.append(v)
+            # 높이 내림차순 + 같은 사이즈에서 k 큰 것 우선
+            # (같은 original_size의 다른 (rot, stacked, k) variant도 모두 후보)
+            anchor_candidates = sorted(
+                unused_variants,
+                key=lambda x: (x['height'], x['count']),
+                reverse=True,
+            )
 
             # 각 앵커 후보로 영역 생성 시도
             for anchor in anchor_candidates:
@@ -704,10 +758,10 @@ class RegionBasedPacker(PackingStrategy):
                     continue
 
                 # 이 앵커로 영역 생성 + 호환 그룹 추가
-                region_groups, region_used = self._build_region_with_anchor(
+                region_groups, region_consumed = self._build_region_with_anchor(
                     anchor,
                     unused_variants,
-                    used_groups
+                    remaining,
                 )
 
                 if not region_groups:
@@ -721,14 +775,16 @@ class RegionBasedPacker(PackingStrategy):
                     'width': self.plate_width,
                     'height': region_height,
                     'max_height': anchor['height'],
-                    'rows': [{'groups': region_groups, 'height': region_height}]  # ★ rows 구조
+                    'rows': [{'groups': region_groups, 'height': region_height}]
                 }
 
-                # 재귀 호출
-                new_used = used_groups | region_used
+                # 재귀 호출: 소비량만큼 차감
+                new_remaining = dict(remaining)
+                for orig, cnt in region_consumed.items():
+                    new_remaining[orig] = new_remaining.get(orig, 0) - cnt
                 new_y = y_offset + region_height
 
-                sub_regions, sub_count = backtrack(new_used, new_y)
+                sub_regions, sub_count = backtrack(new_remaining, new_y)
 
                 # 현재 영역에서 배치된 조각 수
                 current_count = sum(g['count'] for g in region_groups)
@@ -740,7 +796,7 @@ class RegionBasedPacker(PackingStrategy):
 
             return best_regions, best_count
 
-        regions, count = backtrack(set(), 0)
+        regions, count = backtrack(initial_remaining, 0)
 
         # 상단 자투리 영역 추가 (kerf보다 크면 무조건)
         if regions:

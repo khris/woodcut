@@ -266,6 +266,17 @@ cuts.append({'direction': 'V', ..., 'priority': region_priority_base + 20, ...})
 
 **올바른 방법:** Guillotine tree(`GNode`)로 영역·컷을 일원화하고 전위 순회로 emit. cut의 start/end/order가 노드 직사각형에서 자동 유도되므로 priority 수동 조정이 필요 없다. 관련 설계: [.solution/011-20260421-guillotine-tree-refactor.md](.solution/011-20260421-guillotine-tree-refactor.md).
 
+### ❌ 그룹 전체 count를 한 variant에 고정
+
+```python
+# 잘못된 예: count 통째로만 variant 생성
+total_width_h = (w + self.kerf) * count   # count=14면 10710mm — plate 초과
+total_height_v = (h + self.kerf) * count  # count=14면 3710mm — plate 초과
+# → variant가 0개 → Phase A 탈락 → 해당 그룹 배치 실패
+```
+
+**올바른 방법:** plate 한 장에 들어갈 수 있는 `k_max` 를 계산하고 `{count, count//2, ..., 1}` 격자로 부분 chunk variant를 생성. anchor backtracking은 `remaining_counts: dict`로 남은 조각을 추적해 다음 region/plate로 이월. 관련 설계: [.solution/008-20260421-partial-count-stacking.md](.solution/008-20260421-partial-count-stacking.md).
+
 ---
 
 ## 문서화 규칙
