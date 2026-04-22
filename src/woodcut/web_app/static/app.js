@@ -229,29 +229,25 @@ async function initPyodide() {
     try {
         pyodide = await loadPyodide();
 
-        const packingResponse = await fetch(`static/packing.py?v=${Date.now()}`);
-        const packingCode = await packingResponse.text();
-        await pyodide.runPythonAsync(packingCode);
-
-        // rect.py 는 region_based.py 가 `from .rect import Rect, intersects` 로 의존.
-        // pyodide 단일 globals 환경이라 상대 임포트가 불가하므로 먼저 실행해 심볼 노출.
-        const rectResponse = await fetch(`static/rect.py?v=${Date.now()}`);
-        let rectCode = await rectResponse.text();
-        rectCode = rectCode.replace(/from __future__ import annotations\n/g, '');
-        await pyodide.runPythonAsync(rectCode);
-
-        const regionResponse = await fetch(`static/region_based.py?v=${Date.now()}`);
-        let regionCode = await regionResponse.text();
-        regionCode = regionCode.replace(/from __future__ import annotations\n/g, '');
-        regionCode = regionCode.replace(/from \.\.packing import[^\n]*\n/g, '');
-        regionCode = regionCode.replace(/from \.rect import[^\n]*\n/g, '');
-        await pyodide.runPythonAsync(regionCode);
-
-        const splitResponse = await fetch(`static/region_based_split.py?v=${Date.now()}`);
-        let splitCode = await splitResponse.text();
-        splitCode = splitCode.replace(/from __future__ import annotations\n/g, '');
-        splitCode = splitCode.replace(/from \.region_based import[^\n]*\n/g, '');
-        await pyodide.runPythonAsync(splitCode);
+        // Pyodide 는 단일 globals namespace 라서 `from .X` / `from ..X` 같은 상대
+        // 임포트가 항상 `no known parent package` 로 실패함. 모든 모듈을 dependency
+        // order 로 직렬 실행하고, 소스의 상대 임포트 줄은 runtime 에 일괄 제거한다.
+        // 새 strategies 모듈을 추가할 땐 여기에 symlink + fetch 한 줄만 끼우면 된다.
+        const modules = [
+            'packing.py',       // 의존 없음 — base 클래스
+            'rect.py',          // 의존 없음 — Rect / intersects
+            'gnode.py',         // 의존 없음 — Guillotine tree primitives
+            'region_based.py',  // 위 3개에 의존
+            'region_based_split.py',  // region_based 에 의존
+        ];
+        for (const name of modules) {
+            const res = await fetch(`static/${name}?v=${Date.now()}`);
+            let code = await res.text();
+            code = code.replace(/from __future__ import annotations\n/g, '');
+            // `from .X import ...`, `from ..X import ...` 모두 제거
+            code = code.replace(/^from \.[.\w]*\s+import[^\n]*\n/gm, '');
+            await pyodide.runPythonAsync(code);
+        }
 
         packerReady = true;
         setStatus('READY · 입력 후 계산을 실행하세요', 'ready');

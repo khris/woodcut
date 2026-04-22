@@ -326,6 +326,28 @@ def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
 - Chrome MCP로 E2E 검증할 때 `read_page`·`form_input`이 `still loading`으로 막히는 경우가 많음
 - 우회 전략은 `.claude/skills/woodcut-chrome-e2e/SKILL.md` 참조
 
+#### ⚠️ 새 Python 모듈을 추가할 때 (웹 UI 회귀 방지)
+
+**증상:** `초기화 실패: ... ImportError: attempted relative import with no known parent package`
+
+**원인:** Pyodide는 모든 `.py`를 단일 globals에 평탄 실행하므로 `from .X` / `from ..X` 같은 상대 임포트가 항상 실패함. 과거 `rect.py` 추가(커밋 7e838dc)·`gnode.py` 추가에서 동일 회귀가 반복됨.
+
+**체크리스트 — `src/woodcut/strategies/` 또는 `src/woodcut/` 에 새 모듈 `foo.py`를 추가하고 그 모듈을 웹에서 도달 가능한 다른 모듈(`region_based.py` 등)이 import 하는 경우:**
+
+1. **심볼릭 링크 생성**
+   ```bash
+   ln -s ../../strategies/foo.py src/woodcut/web_app/static/foo.py
+   # 또는 src/woodcut/ 바로 아래라면: ln -s ../../foo.py src/woodcut/web_app/static/foo.py
+   ```
+2. **`src/woodcut/web_app/static/app.js` 의 `modules` 배열에 추가**
+   - `initPyodide()` 안의 dependency order 배열에 의존성 뒤쪽에 넣는다
+   - 상대 임포트 strip regex(`/^from \.[.\w]*\s+import[^\n]*\n/gm`)는 모든 `from .X` / `from ..X` 를 일괄 제거하므로 추가 예외는 불필요
+3. **브라우저 프리뷰로 초기화·기본 계산 검증**
+   - `preview_start woodcut-web` → status 가 `READY · ...` 로 바뀌는지 확인
+   - basic preset 계산이 11/11 로 완료되는지 확인
+
+**주의:** `static/` 하위 `.py` 는 전부 symlink 여야 원본과 실체가 한 곳에서 관리됨. 실체 파일을 두면 편집이 분기되어 또 다른 회귀를 만든다.
+
 ---
 
 ## 성능 고려사항
