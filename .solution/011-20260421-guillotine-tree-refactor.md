@@ -2,7 +2,7 @@
 
 - **작성일**: 2026-04-21
 - **작성자**: Hong Segi + Claude
-- **상태**: 초안 (검토 대기)
+- **상태**: 구현 완료 (2026-04-22)
 - **관련 스펙**: [006-occupancy-hierarchical-backtracking](006-20260419-occupancy-hierarchical-backtracking.md), [009-secondary-row-trim-bounds](009-20260421-secondary-row-trim-bounds.md), [010-column-top-guillotine-trim](010-20260421-column-top-guillotine-trim.md)
 
 ## 1. 배경과 문제의식
@@ -219,7 +219,30 @@ def emit_cuts(node, kerf, out):
 - [ ] 11-11. AGENTS.md / PLAN.md 업데이트.
 - [ ] 11-12. 커밋: `refactor(packer): unify region split and cut emit via Guillotine tree`.
 
-## 8. 오픈 질문
+## 8. 실제 구현 차이 (2026-04-22)
+
+플랜과 실제 구현이 달라진 지점:
+
+1. **`_pack_multi_group_region` 은 현재 그대로 남김**. 417 라인 삭제 대신, 이 함수가 만든 `placed` 결과를 입력으로 받아 **재귀 guillotine partitioning**(`_build_recursive` + `_attach_single_piece`)으로 region 내부 subtree를 *재구성*한다. 기존 dict cut은 폐기.
+   - 장점: 기존 배치 로직(백트래킹, anchor, stacked 처리 등)을 완전 보존하면서 cut emit만 tree로 통합.
+   - 비용: dict cut을 만드는 dead 코드가 일부 남음 (후속 PR 정리 대상).
+
+2. **tree 빌드 주체는 `_build_plate_from_regions`**. plate-level skeleton(H 연쇄로 region 경계) + 각 region 내부 재귀 분해를 여기서 한꺼번에 처리. `_allocate_anchor_backtrack` 반환형(regions 리스트)은 유지 — plate dict 조립 단계에서만 tree로 변환된다.
+
+3. **재귀 partitioning 알고리즘** (구현 핵심):
+   - pieces 중 x_end 값을 V cut 후보, y_end 값을 H cut 후보로 취함.
+   - 각 후보에 대해 "왼쪽/오른쪽(또는 위/아래) 그룹으로 정확히 분리 가능 + 간격 == kerf" 확인.
+   - 통과하면 `split_v`/`split_h` 실행 후 양쪽 자식에 재귀.
+   - 피스가 1개 남은 leaf는 우측/상단 여백을 V/H scrap split으로 분리.
+   - 어떤 split도 안 되는 복잡 케이스(비-guillotine 배치)는 False 반환 → region_node를 leaf로 복원하고 dict cut 유지.
+
+4. **priority / sort_key / dedup 삭제**. tree emit은 전위 순회라 중복·순서 문제가 자료구조적으로 없다. fallback 경로는 "흡수 실패한 region의 dict cut만 tree cut 뒤에 이어붙임"으로 간소화.
+
+5. **`validate_guillotine` assertion**: `_build_plate_from_regions` 끝에서 `plate_root`에 대해 호출. 디버그 모드 외 런타임 부하 없음.
+
+6. **수치**: `tests/test_comprehensive_validation.py` 기준 Guillotine 순서 위반 **173 → 0** (validator kerf 인식 + tree 흡수). 모든 케이스에서 `_build_region_subtree` 성공률 100% (19/19).
+
+## 9. 오픈 질문
 
 1. **기존 regions[] 스키마에 의존하는 visualizer/웹 UI 필드**(`region_x`, `region_y`, `region_w`, `region_h` 등)는 tree 기반에서도 동일하게 채워 호환. visualizer 수정 불필요한지 최종 확인 필요.
 2. fallback이 Phase A 실패 시에만 발동하는 구조는 유지. 다만 fallback 트리 루트와 Phase A 트리 루트가 같은 GNode 타입이라 `_pack_single_plate` 반환이 균일해짐.

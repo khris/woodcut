@@ -254,6 +254,18 @@ trim_height = row_height - piece_h - 2 * self.kerf
 **올바른 방법:** `group.get('stacked', False)` 면 그 column 위로 trim 공간을 가정하지 말 것.
 `_init_region_occupancy`가 region에 채워 둔 `occupied: list[Rect]`(stacked는 count개의 Rect로 기록)와 `intersects()`로 방어 검증할 수 있다. 관련 설계: [.solution/006-20260419-occupancy-hierarchical-backtracking.md](.solution/006-20260419-occupancy-hierarchical-backtracking.md).
 
+### ❌ priority / sub_priority 로 cut 순서를 인위 조정
+
+```python
+# 잘못된 예: priority 숫자를 조정해서 Guillotine 순서 맞추기
+cuts.append({'direction': 'V', ..., 'priority': region_priority_base + 20, ...})
+# 서브영역 관계가 코드에 표현 안 됐으므로 "더 큰 priority가 더 나중" 이란 규칙이
+# 항상 Guillotine 조건과 일치한다는 보장이 없음. .solution/010에서 column_top_trim이
+# V=2000(부모 컷)보다 먼저 정렬되는 역전이 발생한 게 대표 사례.
+```
+
+**올바른 방법:** Guillotine tree(`GNode`)로 영역·컷을 일원화하고 전위 순회로 emit. cut의 start/end/order가 노드 직사각형에서 자동 유도되므로 priority 수동 조정이 필요 없다. 관련 설계: [.solution/011-20260421-guillotine-tree-refactor.md](.solution/011-20260421-guillotine-tree-refactor.md).
+
 ---
 
 ## 문서화 규칙

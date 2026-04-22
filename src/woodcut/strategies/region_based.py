@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 from ..packing import PackingStrategy, FreeSpace
+from .gnode import GNode, emit_cuts, split_h, split_v, validate_guillotine
 from .rect import Rect, intersects
 
 
@@ -177,6 +178,12 @@ class RegionBasedPacker(PackingStrategy):
         자식 클래스와 공유되는 "영역 배치 → 조각/절단선 조립" 로직.
         regions는 비어 있지 않다고 가정 (호출 측 책임).
 
+        .solution/011 B0: plate-level Guillotine tree skeleton을 먼저 빌드한다.
+        region 간 경계(`region_boundary`, `scrap_boundary`)는 이 skeleton의
+        internal 노드 cut으로 자동 emit되어 dict 경로에서는 만들지 않는다.
+        region 내부 cut은 현재로선 dict 경로(`_pack_multi_group_region`)가
+        담당하며, 후속 분기(B1~B4)에서 region_node 서브트리 안으로 흡수된다.
+
         Returns:
             plate dict: {'width', 'height', 'pieces', 'cuts', 'free_spaces'}
         """
@@ -188,10 +195,42 @@ class RegionBasedPacker(PackingStrategy):
             'free_spaces': [],
         }
 
+        # --- plate skeleton tree 빌드 ---
+        plate_root = GNode(x=0, y=0, w=self.plate_width, h=self.plate_height)
+        cursor: GNode | None = plate_root
+        region_nodes: list[GNode | None] = [None] * len(regions)
+        for i in range(len(regions) - 1):
+            if cursor is None:
+                break
+            region = regions[i]
+            cut_y = region['y'] + region['max_height']
+            if not (cursor.y < cut_y < cursor.y2):
+                # region이 cursor 범위 밖이면 남은 region_nodes는 미설정 — 이 경로는
+                # 이론적으로 발생 안 하지만 안전망.
+                region_nodes[i] = cursor
+                cursor = None
+                break
+            boundary = cursor
+            region_node, cursor = split_h(boundary, cut_y=cut_y, kerf=self.kerf)
+            boundary.meta['type'] = (
+                'scrap_boundary' if regions[i + 1]['type'] == 'scrap' else 'region_boundary'
+            )
+            region_nodes[i] = region_node
+        if cursor is not None:
+            region_nodes[-1] = cursor
+
+        for i, rn in enumerate(region_nodes):
+            if rn is None:
+                continue
+            if regions[i]['type'] == 'scrap':
+                rn.kind = 'scrap'
+            rn.meta['region_id'] = f'R{i+1}'
+
+        # --- region별 배치 + 내부 dict cut ---
         for i, region in enumerate(regions):
             region['id'] = f'R{i+1}'
 
-        all_cuts = []
+        all_cuts: list[dict] = []
         for i, region in enumerate(regions):
             placed, cuts = self._pack_multi_group_region(
                 region,
@@ -204,44 +243,43 @@ class RegionBasedPacker(PackingStrategy):
             if placed:
                 plate['pieces'].extend(placed)
 
-            if cuts:
+            # B1~B4 통합: region 내부를 재귀 guillotine partitioning으로 트리 흡수.
+            # 성공하면 dict cut 전체 폐기 — tree가 올바른 start/end로 다 emit한다.
+            # 실패(복잡 케이스) 시 region_node는 leaf로 복원되고 dict cut 유지.
+            region_node = region_nodes[i] if i < len(region_nodes) else None
+            absorbed = False
+            if region_node is not None and placed:
+                absorbed = self._build_region_subtree(region_node, placed, region)
+
+            if cuts and not absorbed:
                 for cut in cuts:
                     cut['region_index'] = i
-                all_cuts.extend(cuts)
+                    all_cuts.append(cut)
 
-        def sort_key(cut):
-            priority = cut.get('priority', 100)
-            region_idx = cut.get('region_index', 0)
-            sub_priority = cut.get('sub_priority', 0)
-            position = cut.get('position', 0)
-            if priority == 1:
-                return (priority, position, 0, 0)
-            return (priority, region_idx, sub_priority, position)
+        # tree가 전위 순회 순서로 cut을 emit하므로 priority 기반 sort는 불필요.
+        # 흡수 실패한 region의 dict cut은 all_cuts에 남는데, 현재까진 모든
+        # comprehensive 케이스에서 실패가 0이다. 만일을 위한 fallback 경로로
+        # dict cut을 tree 뒤에 그대로 이어붙인다 (순서 보정 없음).
+        tree_cuts = emit_cuts(plate_root)
+        combined = tree_cuts + all_cuts
 
-        all_cuts.sort(key=sort_key)
+        # 불변식 assertion (.solution/011 11-10): tree 구조 자체 체크.
+        if __debug__:
+            errs = validate_guillotine(plate_root, kerf=self.kerf)
+            if errs:
+                raise AssertionError(
+                    f"Guillotine tree invariant violated: {errs[:3]}"
+                )
 
-        # 물리적으로 동일한 절단선(같은 방향·위치·범위)이 서로 다른 타입으로
-        # 중복 emit되는 경우를 제거. 예: stacked column의 첫 스택 아래 row가
-        # 있을 때 stacked_separation과 secondary_row_trim이 동일 좌표에 생성됨
-        # (.solution/009 참조). 먼저 나온 컷(낮은 priority)을 유지.
-        deduped: list[dict] = []
-        seen: set[tuple] = set()
-        for cut in all_cuts:
-            key = (cut.get('direction'), cut.get('position'), cut.get('start'), cut.get('end'))
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(cut)
-        all_cuts = deduped
-
-        for idx, cut in enumerate(all_cuts):
+        for idx, cut in enumerate(combined):
             cut['order'] = idx + 1
             if 'region_x' not in cut:
                 cut['region_x'] = 0
                 cut['region_y'] = 0
                 cut['region_w'] = self.plate_width
                 cut['region_h'] = self.plate_height
-        plate['cuts'] = all_cuts
+        plate['cuts'] = combined
+        plate['_tree_root'] = plate_root
         return plate
 
     def _pack_fallback_shelf(self, pieces: list[dict]) -> dict:
@@ -342,54 +380,68 @@ class RegionBasedPacker(PackingStrategy):
             yield (h, w, True)
 
     def _emit_fallback_cuts(self, plate: dict, shelves: list[dict]) -> None:
-        """shelf 기반 Guillotine 절단선 생성.
+        """shelf 기반 Guillotine 절단선 생성 (tree 방식, .solution/011).
 
-        - H cut: shelf 상단 (plate top 미만인 경우만 — top scrap과 분리)
-        - V cut: shelf 내부 조각 간 경계 + 마지막 조각 우측 (우측 scrap 분리)
-        모든 조각의 `placed_w/h`가 실제 크기와 일치하므로 trimming cut은 필요 없다.
+        구조:
+        - 루트 = plate 전체.
+        - shelf 경계(y = shelf_top)마다 H 컷 — 루트를 "shelf + 나머지"로 분할.
+        - 각 shelf 내부에서 조각의 우측 edge마다 V 컷 — 조각을 leaf로 떼어냄.
+        - 마지막 조각 이후 남은 우측 공간은 scrap leaf, plate top 위 공간도 scrap.
+
+        tree 전위 순회(`emit_cuts`)가 order·start·end를 자동 계산하므로
+        별도의 priority 조율이나 dedup이 필요 없다.
         """
-        cuts = []
         pw = self.plate_width
         ph = self.plate_height
 
-        for idx, shelf in enumerate(shelves):
+        root = GNode(x=0, y=0, w=pw, h=ph)
+        cursor: GNode | None = root  # 다음 shelf가 들어갈 아래쪽 노드
+
+        for shelf in shelves:
+            if cursor is None:
+                break
+
             shelf_top = shelf['y'] + shelf['h']
-            if shelf_top < ph:
-                cuts.append({
-                    'direction': 'H',
-                    'position': shelf_top,
-                    'start': 0,
-                    'end': pw,
-                    'priority': idx * 100,
-                    'type': 'shelf_boundary',
-                    'region_x': 0,
-                    'region_y': shelf['y'],
-                    'region_w': pw,
-                    'region_h': ph - shelf['y'],
-                })
+            if shelf_top < cursor.y2:
+                # cursor를 (shelf, 나머지 아래쪽)으로 분할. boundary_node는 split을
+                # 수행한 객체 자체 — split 후에도 같은 객체라 meta 태그 가능.
+                boundary_node = cursor
+                shelf_node, cursor = split_h(boundary_node, cut_y=shelf_top, kerf=self.kerf)
+                boundary_node.meta['type'] = 'shelf_boundary'
+            else:
+                # shelf가 cursor 끝에 딱 맞음 — 상단 분할 불필요.
+                shelf_node = cursor
+                cursor = None
+
+            # shelf 내부 V 컷 연쇄로 조각 분할.
+            inner: GNode | None = shelf_node
             shelf_pieces = sorted(shelf['pieces'], key=lambda p: p['x'])
-            for p in shelf_pieces:
-                right_edge = p['x'] + p['placed_w']
-                if right_edge >= pw:
-                    continue
-                cuts.append({
-                    'direction': 'V',
-                    'position': right_edge,
-                    'start': shelf['y'],
-                    'end': shelf_top,
-                    'priority': idx * 100 + 50,
-                    'type': 'shelf_column',
-                    'region_x': 0,
-                    'region_y': shelf['y'],
-                    'region_w': pw,
-                    'region_h': shelf['h'],
-                })
+            for i, piece in enumerate(shelf_pieces):
+                if inner is None:
+                    break
+                right_edge = piece['x'] + piece['placed_w']
+                # 조각이 inner의 오른쪽 경계에 닿음 → 더 이상 V 컷 불필요.
+                if right_edge >= inner.x2 - 1:
+                    inner.piece = piece
+                    inner.kind = 'piece'
+                    inner = None
+                    break
+                column_node = inner
+                piece_leaf, rest = split_v(column_node, cut_x=right_edge, kerf=self.kerf)
+                column_node.meta['type'] = 'shelf_column'
+                piece_leaf.piece = piece
+                piece_leaf.kind = 'piece'
+                inner = rest
+            if inner is not None:
+                inner.kind = 'scrap'
 
-        cuts.sort(key=lambda c: (c['priority'], c.get('position', 0)))
-        for i, c in enumerate(cuts):
-            c['order'] = i + 1
+        # 남은 cursor(plate 상단 scrap)도 leaf로 마감.
+        if cursor is not None:
+            cursor.kind = 'scrap'
 
-        plate['cuts'] = cuts
+        plate['cuts'] = emit_cuts(root)
+        plate['_tree_root'] = root  # 디버그용 — 시각화는 'cuts'만 본다
+
 
     def _group_by_exact_size(self, pieces):
         """레벨 1: 정확히 같은 크기의 조각들끼리 그룹화
@@ -725,6 +777,157 @@ class RegionBasedPacker(PackingStrategy):
 
         return regions
 
+    def _build_region_subtree(
+        self,
+        region_node: GNode,
+        placed: list[dict],
+        region: dict,
+    ) -> bool:
+        """region 내부 배치를 region_node 서브트리로 재구성 (.solution/011).
+
+        재귀 guillotine partitioning: `placed` 좌표만 보고 V/H split을 찾아
+        전체를 Guillotine tree로 분해한다.
+
+        알고리즘
+        --------
+        1. pieces가 비면 scrap leaf.
+        2. piece가 1개면 왼/오/상/하 여백을 V/H scrap split으로 분리.
+        3. pieces 여럿이면:
+           - V cut 후보: pieces의 x_end 값 중 하나 — 왼쪽/오른쪽 분리 가능하면 split.
+           - H cut 후보: pieces의 y_end 값 중 하나.
+           - 어느 방향이든 선 kerf 양쪽 간격이 정확히 kerf여야 함 (배치가 이미 보장).
+        4. 어떤 split도 불가 → False 반환 (region_node를 leaf로 복원).
+
+        반환값
+        ------
+        True: region 전체를 tree로 흡수. 호출측은 이 region의 dict cut을 폐기.
+        False: 복잡 케이스. region_node를 leaf로 복원하고 dict 경로 유지.
+        """
+        if region.get('type') == 'scrap' or not placed:
+            return False
+
+        # 빌드 시도 — 실패 시 region_node 전체 복원
+        if not self._build_recursive(region_node, list(placed)):
+            self._reset_node_recursive(region_node)
+            return False
+        return True
+
+    def _build_recursive(self, node: GNode, pieces: list[dict]) -> bool:
+        """node 영역에 pieces를 Guillotine tree로 재귀 분해."""
+        kerf = self.kerf
+
+        if not pieces:
+            node.kind = 'scrap'
+            return True
+
+        if len(pieces) == 1:
+            return self._attach_single_piece(node, pieces[0])
+
+        # V split 후보: pieces 의 x_end 값
+        v_candidates = sorted({
+            p['x'] + p.get('placed_w', p['width']) for p in pieces
+        })
+        for cut_x in v_candidates:
+            if not (node.x < cut_x < node.x + node.w):
+                continue
+            left = [
+                p for p in pieces
+                if p['x'] + p.get('placed_w', p['width']) <= cut_x
+            ]
+            right = [p for p in pieces if p['x'] >= cut_x + kerf]
+            if len(left) + len(right) != len(pieces):
+                continue
+            if not left or not right:
+                continue
+            # 오른쪽 첫 piece의 x가 cut_x + kerf와 정확히 일치해야 함
+            if min(p['x'] for p in right) != cut_x + kerf:
+                continue
+            left_node, right_node = split_v(node, cut_x=cut_x, kerf=kerf)
+            if (self._build_recursive(left_node, left)
+                    and self._build_recursive(right_node, right)):
+                return True
+            return False
+
+        # H split 후보: pieces 의 y_end 값
+        h_candidates = sorted({
+            p['y'] + p.get('placed_h', p['height']) for p in pieces
+        })
+        for cut_y in h_candidates:
+            if not (node.y < cut_y < node.y + node.h):
+                continue
+            top = [
+                p for p in pieces
+                if p['y'] + p.get('placed_h', p['height']) <= cut_y
+            ]
+            bot = [p for p in pieces if p['y'] >= cut_y + kerf]
+            if len(top) + len(bot) != len(pieces):
+                continue
+            if not top or not bot:
+                continue
+            if min(p['y'] for p in bot) != cut_y + kerf:
+                continue
+            top_node, bot_node = split_h(node, cut_y=cut_y, kerf=kerf)
+            if (self._build_recursive(top_node, top)
+                    and self._build_recursive(bot_node, bot)):
+                return True
+            return False
+
+        # 어떤 guillotine split으로도 분리 불가 (겹침/NFDH-incompat)
+        return False
+
+    def _attach_single_piece(self, node: GNode, piece: dict) -> bool:
+        """node 영역에 piece 하나만 있을 때 주위 scrap을 V/H로 분리하고 leaf 부착.
+
+        순서: 우측 scrap V → 상단 scrap H. 왼쪽/하단 scrap은 이미 상위 split으로
+        처리됐다고 가정 (즉 piece 는 node 의 왼쪽 위 모서리에 맞닿아 있음).
+        """
+        kerf = self.kerf
+        pw = piece.get('placed_w', piece['width'])
+        ph = piece.get('placed_h', piece['height'])
+
+        # piece가 node 왼쪽 위에 맞닿았는지 (±kerf 오차 허용)
+        if abs(piece['x'] - node.x) > kerf or abs(piece['y'] - node.y) > kerf:
+            return False
+
+        cur = node
+        # 우측 scrap 분리
+        right_gap = cur.x + cur.w - (piece['x'] + pw)
+        if right_gap > kerf:
+            col, right_scrap = split_v(cur, cut_x=piece['x'] + pw, kerf=kerf)
+            right_scrap.kind = 'scrap'
+            right_scrap.meta['type'] = 'right_trim'
+            cur = col
+        elif right_gap < -kerf:
+            return False
+
+        # 상단 scrap 분리
+        top_gap = cur.y + cur.h - (piece['y'] + ph)
+        if top_gap > kerf:
+            piece_node, top_scrap = split_h(cur, cut_y=piece['y'] + ph, kerf=kerf)
+            top_scrap.kind = 'scrap'
+            top_scrap.meta['type'] = 'column_top_trim'
+            cur = piece_node
+        elif top_gap < -kerf:
+            return False
+
+        cur.piece = piece
+        cur.kind = 'piece'
+        return True
+
+    def _reset_node_recursive(self, node: GNode) -> None:
+        """node와 그 서브트리를 leaf 상태로 복원 (빌드 실패 rollback)."""
+        if node.first is not None:
+            self._reset_node_recursive(node.first)
+        if node.second is not None:
+            self._reset_node_recursive(node.second)
+        node.cut_dir = None
+        node.cut_pos = None
+        node.first = None
+        node.second = None
+        node.piece = None
+        # kind/meta는 region_node 원래 세팅(scrap 힌트 등)을 지우지 않도록 보존
+        # — 단 이 메서드는 region_node 자체가 아니라 하위 노드에만 쓰이므로 안전
+
     def _pack_multi_group_region(self, region, region_id, region_index, is_first_region, is_last_region=False, region_priority_base=0):
         """한 영역에 여러 그룹 배치 + 절단선 생성
 
@@ -746,30 +949,14 @@ class RegionBasedPacker(PackingStrategy):
 
         print(f"\n[영역 배치] {region['type']}, y={region_y}, max_height={max_height}")
 
-        # 자투리 영역은 경계 절단선만 생성하고 종료
+        # 자투리 영역은 배치·절단선 없음.
+        # 경계 H cut은 plate-level tree skeleton(_build_plate_from_regions)이
+        # region['y'] + region['max_height']에서 이미 emit하므로 여기서는 재방출 금지.
         if region['type'] == 'scrap':
-            if not is_first_region:
-                cuts.append({
-                    'direction': 'H',
-                    'position': region_y,
-                    'start': 0,
-                    'end': self.plate_width,
-                    'priority': region_index,
-                    'type': 'scrap_boundary'
-                })
             return placed, cuts
 
-        # 영역 경계 절단선 (첫 영역 제외)
-        # 우선순위: 전역적 영역 순서 (모든 영역 boundary를 먼저)
-        if not is_first_region:
-            cuts.append({
-                'direction': 'H',
-                'position': region_y,
-                'start': 0,
-                'end': self.plate_width,
-                'priority': region_index,
-                'type': 'region_boundary'
-            })
+        # region_boundary H cut: plate-level tree skeleton이 담당.
+        # 여기서 dict로 다시 내보내면 kerf만큼 어긋난 중복 cut이 생김.
 
         # ★ 다중 행 처리
         current_y = region_y
