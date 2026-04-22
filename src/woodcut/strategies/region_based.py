@@ -226,42 +226,29 @@ class RegionBasedPacker(PackingStrategy):
                 rn.kind = 'scrap'
             rn.meta['region_id'] = f'R{i+1}'
 
-        # --- region별 배치 + 내부 dict cut ---
+        # --- region별 배치 + 트리 흡수 ---
         for i, region in enumerate(regions):
             region['id'] = f'R{i+1}'
 
-        all_cuts: list[dict] = []
         for i, region in enumerate(regions):
-            placed, cuts = self._pack_multi_group_region(
-                region,
-                region['id'],
-                region_index=i,
-                is_first_region=(i == 0),
-                is_last_region=(i == len(regions) - 1),
-                region_priority_base=i * 100,
-            )
+            placed = self._pack_multi_group_region(region)
             if placed:
                 plate['pieces'].extend(placed)
 
-            # B1~B4 통합: region 내부를 재귀 guillotine partitioning으로 트리 흡수.
-            # 성공하면 dict cut 전체 폐기 — tree가 올바른 start/end로 다 emit한다.
-            # 실패(복잡 케이스) 시 region_node는 leaf로 복원되고 dict cut 유지.
+            # region 내부를 재귀 guillotine partitioning으로 트리에 흡수.
+            # placed 좌표만 보고 V/H 후보를 찾아 서브트리를 만든다.
+            # 빈 region(scrap 또는 placed 없음)은 건너뛴다 — leaf 그대로.
             region_node = region_nodes[i] if i < len(region_nodes) else None
-            absorbed = False
             if region_node is not None and placed:
-                absorbed = self._build_region_subtree(region_node, placed, region)
-
-            if cuts and not absorbed:
-                for cut in cuts:
-                    cut['region_index'] = i
-                    all_cuts.append(cut)
+                if not self._build_region_subtree(region_node, placed, region):
+                    raise AssertionError(
+                        f"region {region['id']}: "
+                        f"_build_region_subtree failed — complex layout not absorbed by tree"
+                    )
 
         # tree가 전위 순회 순서로 cut을 emit하므로 priority 기반 sort는 불필요.
-        # 흡수 실패한 region의 dict cut은 all_cuts에 남는데, 현재까진 모든
-        # comprehensive 케이스에서 실패가 0이다. 만일을 위한 fallback 경로로
-        # dict cut을 tree 뒤에 그대로 이어붙인다 (순서 보정 없음).
-        tree_cuts = emit_cuts(plate_root)
-        combined = tree_cuts + all_cuts
+        # 모든 cut은 GNode 트리에서 직접 유도 — start/end/order가 노드 직사각형 자동.
+        cuts = emit_cuts(plate_root)
 
         # 불변식 assertion (.solution/011 11-10): tree 구조 자체 체크.
         if __debug__:
@@ -271,14 +258,14 @@ class RegionBasedPacker(PackingStrategy):
                     f"Guillotine tree invariant violated: {errs[:3]}"
                 )
 
-        for idx, cut in enumerate(combined):
+        for idx, cut in enumerate(cuts):
             cut['order'] = idx + 1
             if 'region_x' not in cut:
                 cut['region_x'] = 0
                 cut['region_y'] = 0
                 cut['region_w'] = self.plate_width
                 cut['region_h'] = self.plate_height
-        plate['cuts'] = combined
+        plate['cuts'] = cuts
         plate['_tree_root'] = plate_root
         return plate
 
@@ -420,8 +407,9 @@ class RegionBasedPacker(PackingStrategy):
                 if inner is None:
                     break
                 right_edge = piece['x'] + piece['placed_w']
-                # 조각이 inner의 오른쪽 경계에 닿음 → 더 이상 V 컷 불필요.
-                if right_edge >= inner.x2 - 1:
+                # 조각 오른쪽에 kerf 너비도 안 남으면 split_v 불가 — inner 전체를
+                # 이 조각으로 마감. (±1mm 경계/톱밥 두께 이하 여분은 무시)
+                if right_edge + self.kerf >= inner.x2:
                     inner.piece = piece
                     inner.kind = 'piece'
                     inner = None
@@ -928,118 +916,91 @@ class RegionBasedPacker(PackingStrategy):
         # kind/meta는 region_node 원래 세팅(scrap 힌트 등)을 지우지 않도록 보존
         # — 단 이 메서드는 region_node 자체가 아니라 하위 노드에만 쓰이므로 안전
 
-    def _pack_multi_group_region(self, region, region_id, region_index, is_first_region, is_last_region=False, region_priority_base=0):
-        """한 영역에 여러 그룹 배치 + 절단선 생성
+    def _pack_multi_group_region(self, region: dict) -> list[dict] | None:
+        """region에 조각들을 배치하고 placed 리스트 반환.
+
+        절단선 생성은 하지 않는다 — `_build_region_subtree`가 `placed` 좌표만
+        보고 재귀 guillotine partitioning으로 tree를 빌드한다(.solution/011).
 
         Args:
-            region: _allocate_anchor_backtrack()가 생성한 영역 정보
-            region_id: 영역 ID (예: 'R1', 'R2')
-            region_index: 영역 인덱스 (0부터 시작)
-            is_first_region: 첫 번째 영역 여부
-            is_last_region: 마지막 영역 여부
+            region: `_allocate_anchor_backtrack`이 만든 영역 정보
+                (`x`, `y`, `width`, `height`, `max_height`, `rows`, `type`).
 
         Returns:
-            (placed_pieces, cuts)  # 조각 리스트, 절단선 리스트
+            - scrap region: 빈 리스트.
+            - 일반 region: 조각 dict 리스트. 각 dict에 `placed_w`/`placed_h`
+              (회전 반영된 실제 배치 크기) 세팅됨.
+            - 공간 부족(invalid layout): None.
         """
-        placed = []
-        cuts = []
-        current_x = region['x']
+        placed: list[dict] = []
         region_y = region['y']
         max_height = region['max_height']
 
         print(f"\n[영역 배치] {region['type']}, y={region_y}, max_height={max_height}")
 
-        # 자투리 영역은 배치·절단선 없음.
-        # 경계 H cut은 plate-level tree skeleton(_build_plate_from_regions)이
-        # region['y'] + region['max_height']에서 이미 emit하므로 여기서는 재방출 금지.
+        # scrap region은 배치 없음 — plate skeleton이 경계 H cut을 이미 emit함
         if region['type'] == 'scrap':
-            return placed, cuts
+            return placed
 
-        # region_boundary H cut: plate-level tree skeleton이 담당.
-        # 여기서 dict로 다시 내보내면 kerf만큼 어긋난 중복 cut이 생김.
-
-        # ★ 다중 행 처리
+        # 다중 행 처리
         current_y = region_y
-        
         for row_idx, row in enumerate(region['rows']):
-            # 행 경계 절단선 (첫 행 제외)
-            if row_idx > 0:
-                cuts.append({
-                    'direction': 'H',
-                    'position': current_y,
-                    'start': 0,
-                    'end': self.plate_width,
-                    'priority': region_priority_base + 5 + row_idx,
-                    'sub_priority': 0,
-                    'type': 'tier_boundary',
-                    'affects': 999
-                })
-                print(f"  [행 {row_idx+1}] 경계 절단선: y={current_y}")
-
-            # 행 내 조각 배치 (수평 방향)
             current_x = region['x']
-            
+
             for group in row['groups']:
                 w, h = group['original_size']
                 rotated = group['rotated']
                 count = group['count']
-                stacked = group.get('stacked', False)  # 세로 배치 여부
+                stacked = group.get('stacked', False)
 
-                # 회전 적용
                 piece_w = h if rotated else w
                 piece_h = w if rotated else h
 
-                # 상단 정렬 (절단 로직과 일치)
-                y_offset = 0
-                
                 mode_str = "세로" if stacked else "가로"
-                print(f"  [행 {row_idx+1}] 그룹 {w}×{h} (회전={rotated}, {mode_str}배치): {count}개 → y={current_y}")
+                print(
+                    f"  [행 {row_idx+1}] 그룹 {w}×{h} "
+                    f"(회전={rotated}, {mode_str}배치): {count}개 → y={current_y}"
+                )
 
-                group_start_x = current_x  # trim_rows 배치 기준점
+                group_start_x = current_x  # trim_rows 기준점
 
                 if stacked:
-                    # 세로 배치: 조각들을 세로로 쌓음
+                    # 세로 배치: 같은 x에 연속 y로 쌓음
                     for i in range(count):
-                        # 공간 체크
                         if current_x + piece_w > region['x'] + region['width']:
-                            print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
-                            return None, []
-
-                        piece_y = current_y + y_offset + i * (piece_h + self.kerf)
-
+                            print(
+                                f"    ⚠️  공간 부족: x={current_x}, piece_w={piece_w}, "
+                                f"region_w={region['width']}"
+                            )
+                            return None
+                        piece_y = current_y + i * (piece_h + self.kerf)
                         placed.append({
-                            'width': w,
-                            'height': h,
-                            'x': current_x,
-                            'y': piece_y,
+                            'width': w, 'height': h,
+                            'x': current_x, 'y': piece_y,
                             'rotated': rotated,
                             'id': len(placed),
-                            'original': (w, h)
+                            'original': (w, h),
                         })
-
                     current_x += piece_w + self.kerf
                 else:
-                    # 가로 배치: 기존 로직
+                    # 가로 배치: 같은 y에 연속 x로 나열
                     for _ in range(count):
-                        # 공간 체크
                         if current_x + piece_w > region['x'] + region['width']:
-                            print(f"    ⚠️  공간 부족: current_x={current_x}, piece_w={piece_w}, region_width={region['width']}")
-                            return None, []  # 배치 실패
-
+                            print(
+                                f"    ⚠️  공간 부족: x={current_x}, piece_w={piece_w}, "
+                                f"region_w={region['width']}"
+                            )
+                            return None
                         placed.append({
-                            'width': w,
-                            'height': h,
-                            'x': current_x,
-                            'y': current_y + y_offset,
+                            'width': w, 'height': h,
+                            'x': current_x, 'y': current_y,
                             'rotated': rotated,
-                            # placed_w/h는 절단 알고리즘이 설정 (미리 설정하면 트리밍 절단 생성 안 됨)
                             'id': len(placed),
-                            'original': (w, h)
+                            'original': (w, h),
                         })
-
                         current_x += piece_w + self.kerf
 
-                # 행 내부 trim 공간에 배치된 조각들 (multi-tier trim)
+                # trim_rows: 그룹 안쪽 자투리 공간에 끼워 넣은 조각들
                 for trim_row in group.get('trim_rows', []):
                     trim_y = current_y + trim_row['y_offset']
                     trim_x = group_start_x + trim_row.get('x_offset', 0)
@@ -1047,279 +1008,23 @@ class RegionBasedPacker(PackingStrategy):
                         tw, th = trim_group['original_size']
                         trotated = trim_group['rotated']
                         tpiece_w = th if trotated else tw
-                        tpiece_h = tw if trotated else th
                         for _ in range(trim_group['count']):
                             if trim_x + tpiece_w > region['x'] + region['width']:
                                 break
                             placed.append({
-                                'width': tw,
-                                'height': th,
-                                'x': trim_x,
-                                'y': trim_y,
+                                'width': tw, 'height': th,
+                                'x': trim_x, 'y': trim_y,
                                 'rotated': trotated,
                                 'id': len(placed),
-                                'original': (tw, th)
+                                'original': (tw, th),
                             })
                             trim_x += tpiece_w + self.kerf
 
-            # 다음 행 시작 y 업데이트
             current_y += row['height']
 
         print(f"  → {len(placed)}개 조각 배치 성공 ({len(region['rows'])}개 행)")
 
-        # 절단선 생성
-        if not placed:
-            return placed, cuts
-
-        # 1. y 위치 → x 위치로 정렬 (다중 행 지원)
-        sorted_pieces = sorted(placed, key=lambda p: (p['y'], p['x']))
-
-        # 2. y 위치 + 높이별로 그룹 분할
-        groups = []  # [{pieces: [...], height: h, y: y}, ...]
-        curr_group = {'pieces': [sorted_pieces[0]], 'height': None, 'y': sorted_pieces[0]['y']}
-
-        for i, piece in enumerate(sorted_pieces):
-            piece_h = piece['width'] if piece.get('rotated') else piece['height']
-            piece_y = piece['y']
-
-            if curr_group['height'] is None:
-                curr_group['height'] = piece_h
-
-            if i > 0:
-                prev_h = sorted_pieces[i-1]['width'] if sorted_pieces[i-1].get('rotated') else sorted_pieces[i-1]['height']
-                prev_y = sorted_pieces[i-1]['y']
-                # y 위치가 다르거나 높이가 다르면 새 그룹
-                if abs(piece_y - prev_y) > 1 or abs(piece_h - prev_h) > 1:
-                    groups.append(curr_group)
-                    curr_group = {'pieces': [piece], 'height': piece_h, 'y': piece_y}
-                else:
-                    curr_group['pieces'].append(piece)
-
-        groups.append(curr_group)  # 마지막 그룹 추가
-
-        # 세로 배치(stacked) 조각이 있으면 y+h가 region_y보다 훨씬 클 수 있음
-        max_height_in_region = max(g['y'] + g['height'] - region_y for g in groups)
-
-        # 3. 영역 상단 자투리 trim (영역 내부 절단선)
-        if max_height - max_height_in_region > self.kerf:
-            cuts.append({
-                'direction': 'H',
-                'position': region_y + max_height_in_region,
-                'start': region['x'],
-                'end': region['x'] + region['width'],
-                'priority': region_priority_base + 10,
-                'type': 'region_trim'
-            })
-            print(f"  → 영역 상단 trim: y={region_y + max_height_in_region}")
-
-        # 3b. 2차 행 자투리 trim (trim_rows로 배치된 그룹이 max_height 미만일 때)
-        # 예: trim 조각(h=50)이 y=355에 있고 max_height=450이면 H@405 필요
-        # H컷 범위는 해당 행 조각의 실제 x 범위로 제한 (인접 컬럼 침범 방지)
-        secondary_rows: dict[int, tuple[int, int, int]] = {}  # {row_y: (max_h, min_x, max_x)}
-        for g in groups:
-            if g['y'] > region_y:
-                row_y = g['y']
-                g_x_start = min(p['x'] for p in g['pieces'])
-                g_x_end = max(p['x'] + (p['height'] if p.get('rotated') else p['width']) for p in g['pieces'])
-                if row_y in secondary_rows:
-                    prev_h, prev_x0, prev_x1 = secondary_rows[row_y]
-                    secondary_rows[row_y] = (max(prev_h, g['height']), min(prev_x0, g_x_start), max(prev_x1, g_x_end))
-                else:
-                    secondary_rows[row_y] = (g['height'], g_x_start, g_x_end)
-        for row_y, (row_h, x_start, x_end) in secondary_rows.items():
-            row_end = row_y + row_h
-            if row_end < region_y + max_height - self.kerf:
-                # 컷 범위는 해당 행 조각의 실제 수평 범위로 제한해야 함.
-                # region 전체 너비로 확장하면 인접 컬럼(예: stacked 우측의 다른 그룹)을
-                # 가로지르는 Guillotine 위반이 발생 (.solution/009).
-                cuts.append({
-                    'direction': 'H',
-                    'position': row_end,
-                    'start': x_start,
-                    'end': x_end,
-                    'priority': region_priority_base + 23,
-                    'type': 'secondary_row_trim'
-                })
-                print(f"  → 2차 행 trim: y={row_end}, x={x_start}~{x_end}")
-
-        # 3c. 컬럼 상단 Guillotine trim (.solution/010).
-        # 각 x 컬럼의 실제 "천장"을 집계해 region 천장보다 낮으면 H 컷을 추가.
-        # H 컷 범위는 인접 V 컷 사이의 서브영역 전체(= 인접 컬럼 경계)로 확장해
-        # "서브영역 전체 관통"이라는 Guillotine 조건을 만족시킨다.
-        column_top: dict[tuple[int, int], int] = {}
-        for g in groups:
-            g_x_start = min(p['x'] for p in g['pieces'])
-            g_x_end = max(
-                p['x'] + (p['height'] if p.get('rotated') else p['width'])
-                for p in g['pieces']
-            )
-            top_y = g['y'] + g['height']
-            key = (g_x_start, g_x_end)
-            column_top[key] = max(column_top.get(key, 0), top_y)
-
-        region_top = region_y + max_height
-        region_x_end = region['x'] + region['width']
-        sorted_cols = sorted(column_top.keys())
-        for i, (xs, xe) in enumerate(sorted_cols):
-            top_y = column_top[(xs, xe)]
-            if region_top - top_y <= self.kerf:
-                continue
-            left = sorted_cols[i - 1][1] if i > 0 else region['x']
-            right = sorted_cols[i + 1][0] if i < len(sorted_cols) - 1 else region_x_end
-            cuts.append({
-                'direction': 'H',
-                'position': top_y,
-                'start': left,
-                'end': right,
-                'priority': region_priority_base + 15,
-                'type': 'column_top_trim',
-                'sub_priority': 0,
-            })
-            print(f"  → 컬럼 top trim: y={top_y}, x={left}~{right}")
-
-        # 4. 세로 배치(stacked) 컬럼 감지 및 전용 절단선 생성
-        # 동일 x + 동일 너비 + 연속 y = 하나의 세로 컬럼
-        stacked_columns: dict[tuple, list[int]] = {}
-        for idx, g in enumerate(groups):
-            if len(g['pieces']) == 1:
-                p = g['pieces'][0]
-                pw = p['height'] if p.get('rotated') else p['width']
-                stacked_columns.setdefault((p['x'], pw), []).append(idx)
-
-        # 2개 이상 그룹이 같은 컬럼 → stacked
-        stacked_group_indices: set[int] = set()
-        for col_group_indices in stacked_columns.values():
-            if len(col_group_indices) > 1:
-                stacked_group_indices.update(col_group_indices)
-
-        for col_key, col_group_indices in stacked_columns.items():
-            if len(col_group_indices) < 2:
-                continue
-
-            x_start, pw = col_key
-            col_x_end = x_start + pw
-            priority_base = region_priority_base + 20
-
-            # V trim: 컬럼 우측 자투리 (한 번만 생성)
-            region_x_end = region['x'] + region['width']
-            if region_x_end - col_x_end > self.kerf:
-                top_g = groups[col_group_indices[0]]
-                bot_g = groups[col_group_indices[-1]]
-                cuts.append({
-                    'direction': 'V',
-                    'position': col_x_end,
-                    'start': top_g['y'],
-                    'end': bot_g['y'] + bot_g['height'],
-                    'priority': priority_base,
-                    'type': 'right_trim',
-                    'sub_priority': 2
-                })
-                print(f"  → stacked V trim: x={col_x_end}")
-
-            # H 분리: stacked 조각 사이 (V cut 이후에 실행되도록 priority 높임)
-            for i in range(len(col_group_indices) - 1):
-                g = groups[col_group_indices[i]]
-                cut_y = g['y'] + g['height']
-                cuts.append({
-                    'direction': 'H',
-                    'position': cut_y,
-                    'start': x_start,
-                    'end': col_x_end,
-                    'priority': priority_base + 5,
-                    'type': 'stacked_separation',
-                    'sub_priority': 1
-                })
-                print(f"  → stacked H 분리: y={cut_y}, x={x_start}~{col_x_end}")
-
-        # 5. 그룹별 인터리브 절단선 생성 (stacked 그룹 제외)
-        for group_idx, group in enumerate(groups):
-            # 세로 배치 컬럼에 속한 그룹은 위에서 처리됨
-            if group_idx in stacked_group_indices:
-                continue
-            group_pieces = group['pieces']
-            group_h = group['height']
-
-            # Priority base = region_priority_base + 20 + group_idx * 10 (영역 내부)
-            priority_base = region_priority_base + 20 + group_idx * 10
-            
-            # 4a. 현재 그룹 내 조각 분리 (piece_separation)
-            for i in range(len(group_pieces) - 1):
-                curr = group_pieces[i]
-                curr_w = curr['height'] if curr.get('rotated') else curr['width']
-
-                cuts.append({
-                    'direction': 'V',
-                    'position': curr['x'] + curr_w,
-                    'start': group['y'],  # ★ group의 y 위치 사용
-                    'end': group['y'] + group_h,
-                    'priority': priority_base,
-                    'type': 'piece_separation',
-                    'sub_priority': 1
-                })
-            
-            # 4b. 그룹 우측 자투리 trim (마지막 조각 후)
-            last_piece = group_pieces[-1]
-            last_w = last_piece['height'] if last_piece.get('rotated') else last_piece['width']
-            last_x_end = last_piece['x'] + last_w
-            
-            # ★ 행 끝 판단: 마지막 그룹이거나, 다음 그룹이 다른 행일 때
-            is_row_end = (group_idx == len(groups) - 1)
-            if not is_row_end and group_idx < len(groups) - 1:
-                next_group_y = groups[group_idx + 1]['y']
-                if abs(next_group_y - group['y']) > 1:
-                    is_row_end = True
-            
-            if is_row_end:
-                region_x_end = region['x'] + region['width']
-                if region_x_end - last_x_end > self.kerf:
-                    cuts.append({
-                        'direction': 'V',
-                        'position': last_x_end,
-                        'start': group['y'],  # ★ group의 y 위치 사용
-                        'end': group['y'] + group_h,
-                        'priority': priority_base,
-                        'type': 'right_trim',
-                        'sub_priority': 2
-                    })
-            
-            # 4c. 다음 그룹과의 경계 (group_boundary)
-            if group_idx < len(groups) - 1:
-                next_group = groups[group_idx + 1]
-                next_h = next_group['height']
-                
-                # 경계 위치: 현재 그룹 마지막 조각 끝
-                boundary_x = last_x_end
-                
-                # ★ 다른 행이면 그룹 경계 생성 안 함 (tier_boundary가 이미 있음)
-                next_y = next_group['y']
-                if abs(next_y - group['y']) > 1:
-                    continue
-
-                cuts.append({
-                    'direction': 'V',
-                    'position': boundary_x,
-                    'start': group['y'],  # ★ group의 y 위치 사용
-                    'end': group['y'] + max(group_h, next_h),  # 두 그룹 중 더 높은 곳까지
-                    'priority': priority_base + 1,
-                    'type': 'group_boundary',
-                    'sub_priority': 0
-                })
-                print(f"  → 그룹 경계: x={boundary_x} (그룹 {group_idx} vs {group_idx+1})")
-                
-                # 4d. 다음 그룹 높이 trim (필요한 경우만)
-                if next_h < group_h:
-                    cuts.append({
-                        'direction': 'H',
-                        'position': next_y + next_h,  # ★ next_group의 y 위치 사용
-                        'start': boundary_x,
-                        'end': region['x'] + region['width'],  # 영역 끝까지
-                        'priority': priority_base + 2,
-                        'type': 'group_trim',
-                        'sub_priority': 0
-                    })
-                    print(f"  → 다음 그룹 trim: y={next_y + next_h}, x={boundary_x}~끝")
-        
-        # 6. placed_w/h 설정
+        # placed_w/h 설정 (회전 반영된 실제 크기 — 후속 subtree 빌드가 소비)
         for piece in placed:
             if piece.get('rotated', False):
                 piece['placed_w'] = piece['height']
@@ -1328,7 +1033,10 @@ class RegionBasedPacker(PackingStrategy):
                 piece['placed_w'] = piece['width']
                 piece['placed_h'] = piece['height']
 
-        return placed, cuts
+        # max_height는 호출측 스키마 정합성을 위해 참조만 해두고 사용 안 함.
+        _ = max_height
+
+        return placed
 
     def _init_region_occupancy(self, regions: list[dict]) -> None:
         """Phase A 결과물에 `occupied`/`free_rects` 필드를 추가.
