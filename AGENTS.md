@@ -345,8 +345,30 @@ def pack(self, pieces: list[tuple[int, int, int]]) -> list[dict]:
 3. **브라우저 프리뷰로 초기화·기본 계산 검증**
    - `preview_start woodcut-web` → status 가 `READY · ...` 로 바뀌는지 확인
    - basic preset 계산이 11/11 로 완료되는지 확인
+4. **로컬에서 `python3 scripts/extract_web_dependencies.py` 실행해 새 모듈이 추출 결과에 들어왔는지 확인**
+   - 이 스크립트가 GitHub Actions 빌드 단계에서 `_site/static/` 으로 복사할 `.py` 목록을 만든다
+   - 누락되면 라이브 사이트는 404(HTML)를 받아 Pyodide 가 CSS 를 Python 으로 컴파일하다 `SyntaxError: invalid decimal literal` 로 죽는다 (커밋 33bcdc1 회귀)
 
 **주의:** `static/` 하위 `.py` 는 전부 symlink 여야 원본과 실체가 한 곳에서 관리됨. 실체 파일을 두면 편집이 분기되어 또 다른 회귀를 만든다.
+
+#### 🚨 배포 후 GitHub Actions 결과 확인 (필수)
+
+`main` 푸시는 자동으로 [Deploy to GitHub Pages](.github/workflows/deploy-pages.yml) 워크플로우를 트리거한다. **푸시했다고 끝이 아님 — 다음을 반드시 확인:**
+
+1. **워크플로우 run conclusion 확인** (success 라도 빌드 산출물이 정상이라는 보장은 아님 — 과거 `while read` 파이프가 `python ... | while ...` 의 exit 1 을 묻고 빈 산출물을 deploy 한 사고가 있었음, 워크플로우는 fail-fast 가드를 추가했지만 항상 다시 검증)
+   ```bash
+   curl -s "https://api.github.com/repos/khris/woodcut/actions/workflows/219090318/runs?per_page=1" \
+     | python3 -c "import json,sys; r=json.load(sys.stdin)['workflow_runs'][0]; print(r['head_sha'][:7], r['conclusion'])"
+   ```
+2. **라이브 사이트의 Python 모듈 응답 확인** — 200 이어야 함. 404 면 빌드가 빈 static 으로 deploy 된 것:
+   ```bash
+   for f in packing.py rect.py gnode.py region_based.py region_based_split.py; do
+     curl -sI "https://khris.github.io/woodcut/static/$f" | head -1
+   done
+   ```
+3. **(가능하면) 라이브 사이트 자체 로드 확인** — index.html 요청 후 status 가 `READY` 까지 오는지
+
+**원칙:** 로컬 프리뷰 통과 ≠ 배포 정상. extract 스크립트·워크플로우 단계가 깨지면 로컬 dev server (정적 파일을 직접 서빙) 로는 절대 잡히지 않는다. `app.js` / `static/*.py` / `scripts/extract_web_dependencies.py` / `.github/workflows/deploy-pages.yml` 중 하나라도 건드렸다면 push 후 위 3 단계를 반드시 돌릴 것.
 
 ---
 

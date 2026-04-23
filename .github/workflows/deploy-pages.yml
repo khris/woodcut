@@ -30,24 +30,42 @@ jobs:
           python-version: '3.11'
 
       - name: Build docs directory
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p _site/static
-          
+
           # 정적 파일 복사 (HTML, CSS, JS)
           cp src/woodcut/web_app/static/index.html _site/
           cp src/woodcut/web_app/static/style.css _site/static/
           cp src/woodcut/web_app/static/app.js _site/static/
-          
+
           # app.js에서 필요한 Python 파일 동적 추출 및 복사
+          # ⚠️  while-read 파이프는 python 의 exit 1 을 묻어버려서 빈 static
+          #     디렉토리가 그대로 deploy 되는 사고를 낸 적이 있음 (커밋 33bcdc1).
+          #     반드시 mapfile 로 받아 카운트 검증 후 복사한다.
           echo "=== app.js에서 필요한 Python 파일 추출 중 ==="
-          python3 scripts/extract_web_dependencies.py | while read -r py_file; do
+          mapfile -t py_files < <(python3 scripts/extract_web_dependencies.py)
+          if [ "${#py_files[@]}" -eq 0 ]; then
+            echo "::error::extract_web_dependencies.py 가 0건 반환. app.js 패턴이 깨졌을 가능성." >&2
+            exit 1
+          fi
+          for py_file in "${py_files[@]}"; do
             echo "복사: $py_file -> _site/static/"
             cp "$py_file" _site/static/
           done
-          
+
+          # 핵심 파일이 _site/static 에 실제로 있는지 sanity check
+          for required in packing.py region_based.py; do
+            if [ ! -f "_site/static/$required" ]; then
+              echo "::error::필수 파일 누락: _site/static/$required" >&2
+              exit 1
+            fi
+          done
+
           # Jekyll 비활성화
           touch _site/.nojekyll
-          
+
           echo "=== 빌드 완료 ==="
           echo "복사된 파일 목록:"
           ls -lh _site/

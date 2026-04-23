@@ -12,23 +12,24 @@ from pathlib import Path
 
 
 def extract_python_dependencies(app_js_path: str) -> list[str]:
-    """app.js에서 fetch하는 .py 파일 경로를 추출
-    
-    Args:
-        app_js_path: app.js 파일 경로
-        
-    Returns:
-        .py 파일 상대 경로 리스트 (예: ['packing.py', 'region_based.py'])
+    """app.js 안에서 Pyodide 가 fetch 할 .py 파일명을 추출.
+
+    구버전 app.js 는 `fetch('static/X.py')` 처럼 경로 리터럴을 직접 갖고 있어서
+    `fetch\\(['"`]static/...\\.py` 패턴으로 잘 잡혔지만, 현재 app.js 는 모듈명을
+    배열에 넣고 템플릿 리터럴(`static/${name}`)로 fetch 한다. 그래서 더 이상
+    경로 리터럴이 존재하지 않는다.
+
+    이번엔 따옴표로 감싼 모든 `*.py` 식별자를 추출해서 양 패턴을 모두 커버한다.
+    이 프로젝트의 app.js 는 모듈명 외에 .py 리터럴을 쓰지 않으므로 false positive
+    위험은 없다.
     """
     with open(app_js_path, encoding='utf-8') as f:
         content = f.read()
-    
-    # fetch(`static/*.py`...) 패턴 찾기
-    # 예: fetch(`static/packing.py?v=${Date.now()}`)
-    pattern = r"fetch\([`'\"]static/([a-zA-Z0-9_]+\.py)"
+
+    # 'foo.py' / "foo.py" / `foo.py` — 어떤 따옴표든 매칭
+    pattern = r"""['"`]([a-zA-Z0-9_]+\.py)['"`]"""
     matches = re.findall(pattern, content)
-    
-    # 중복 제거 및 정렬
+
     return sorted(set(matches))
 
 
